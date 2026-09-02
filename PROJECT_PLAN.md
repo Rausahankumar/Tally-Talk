@@ -93,8 +93,8 @@ small/cheap model behind a swappable interface; prompt caching where supported.
 | Phase | Scope | Status |
 |---|---|---|
 | 0 | Foundation: docs, git, TypeScript + Vitest toolchain | ✅ Complete |
-| 1 | Telegram webhook slice: secret verification, allowlist, echo reply | Next |
-| 2 | Config module, SQLite setup, append-only audit log | Planned |
+| 1 | Telegram webhook slice: secret verification, allowlist, echo reply | ✅ Complete |
+| 2 | SQLite setup and append-only audit log | Next |
 | 3 | Tally XML client + master data sync and cache | Planned |
 | 4 | LLM module: structured extraction schema and single-call extraction | Planned |
 | 5 | Validation + fuzzy matching + GST calculation | Planned |

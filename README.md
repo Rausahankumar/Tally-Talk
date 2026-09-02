@@ -13,8 +13,9 @@ causes a write on its own.
 
 ## Status
 
-Phase 0 (foundation) complete — documentation, Git, and the TypeScript + Vitest
-toolchain. No application code yet. See `PROJECT_STATUS.md`.
+Phase 1 complete. The Express server accepts Telegram webhook updates, verifies
+the secret token, checks the sender against the allowlist and echoes the message
+back. No LLM, Tally or conversation logic yet. See `PROJECT_STATUS.md`.
 
 ## Requirements
 
@@ -36,9 +37,24 @@ Never commit `.env`.
 
 | Command | Purpose |
 |---|---|
+| `npm start` | Run the server (reads `.env`) |
+| `npm run dev` | Run the server with file watching |
 | `npm test` | Run the test suite once |
 | `npm run test:watch` | Run tests in watch mode |
 | `npm run typecheck` | Type-check without emitting |
+
+## Endpoints
+
+| Route | Purpose |
+|---|---|
+| `GET /health` | Liveness check |
+| `POST /webhook/telegram` | Telegram updates — requires a valid `X-Telegram-Bot-Api-Secret-Token` header, then an allowlisted sender |
+
+Register the webhook with Telegram using the same secret you put in `.env`:
+
+```bash
+curl -X POST "https://api.telegram.org/bot<TOKEN>/setWebhook" -d "url=https://<host>/webhook/telegram" -d "secret_token=<TELEGRAM_WEBHOOK_SECRET>"
+```
 
 ## Deployment note
 

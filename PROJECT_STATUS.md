@@ -4,23 +4,29 @@ _Last updated: 2026-09-02_
 
 ## Current phase
 
-Phase 0 — Foundation & Toolchain. **Complete.**
+Phase 1 — Telegram Webhook Vertical Slice. **Complete.**
 
 ## Current task
 
-None. Awaiting approval to begin Phase 1.
+None. Awaiting approval to begin Phase 2.
 
 ## Completed work
 
-- Git repository initialised; branch `phase-0-foundation` created and committed.
-- Documentation established: `CLAUDE.md`, `README.md`, `PROJECT_PLAN.md`,
-  `DECISIONS.md`, this file.
-- `.env.example` documenting all required secrets; `.gitignore` excluding
-  `.env`, `node_modules/`, build output and the SQLite database.
-- TypeScript 5.7 (strict, NodeNext, `noUncheckedIndexedAccess`) configured.
-- Vitest 4 configured; `tests/toolchain.test.ts` verifies the harness runs
-  TypeScript and the Node version is supported.
-- `npm test` → 2 passed. `npm run typecheck` → clean. `npm audit` → 0 vulnerabilities.
+**Phase 0 — Foundation & Toolchain**
+- Git initialised; documentation set (`CLAUDE.md`, `README.md`, `PROJECT_PLAN.md`,
+  `DECISIONS.md`, this file), `.env.example`, `.gitignore`.
+- TypeScript 5.9 strict + Vitest 4; toolchain test.
+
+**Phase 1 — Telegram Webhook Vertical Slice**
+- `src/config/` — loads and validates env at startup; aggregates every problem
+  into one `ConfigError` and exits before the socket opens.
+- `src/channels/telegram/` — defensive update parser, outbound Bot API client
+  (injectable `fetch`), and the webhook route.
+- `src/app.ts` / `src/server.ts` — Express 5 app with `/health`, the webhook at
+  `POST /webhook/telegram`, 64 kB body cap, JSON 404 and error handlers.
+- Security gates, in order: constant-time `X-Telegram-Bot-Api-Secret-Token`
+  check → 401; then allowlist check → acknowledged and dropped silently.
+- `npm start` / `npm run dev` run TypeScript directly on Node — no build step.
 
 ## Work in progress
 
@@ -28,19 +34,23 @@ None.
 
 ## Next task
 
-Phase 1 — Telegram webhook vertical slice: Express server, webhook route with
-`X-Telegram-Bot-Api-Secret-Token` verification, user allowlist check, and a plain
-echo reply. No LLM and no Tally integration in this phase.
+Phase 2 — Config completion, SQLite setup and the append-only audit log:
+`src/db/` schema and migration, `src/audit/` writer, and audit records for
+inbound messages and authorization outcomes.
 
 ## Known issues / blockers
 
 - **No GitHub remote and `gh` CLI is not installed** — push and pull-request
-  workflow is unavailable. All commits are local only.
-- `main` branch has no commits yet; all history is on `phase-0-foundation`.
-- LLM provider still undecided (deliberate — see `DECISIONS.md` #3).
+  workflow unavailable. All commits are local only.
+- `main` branch still has no commits; history is on the phase branches.
+- Nothing is persisted yet — rejected and accepted messages are logged to stdout
+  only. Phase 2 addresses this.
+- No rate limiting yet (planned for Phase 8).
+- LLM provider still undecided (deliberate — `DECISIONS.md` #3).
 
 ## Last important technical decision
 
-Upgraded to Vitest 4 instead of the initially pinned Vitest 2, which carried five
-dev-only advisories (one critical, one high) through its vite/esbuild chain.
-`npm audit` now reports zero vulnerabilities. See `DECISIONS.md` #7.
+Unauthorized Telegram users are dropped silently rather than told they are
+blocked: replying would confirm to a prober that a live accounting bot sits
+behind the endpoint, while HTTP 200 stops Telegram retrying. See `DECISIONS.md`
+#9; the no-build-step TypeScript decision is #8.

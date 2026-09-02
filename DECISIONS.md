@@ -78,3 +78,33 @@ Important decisions only. Newest last.
   advisories; pinning overrides for the transitive `vite`/`esbuild` versions —
   both worse than simply using a current major.
 - **Date:** 2026-09-02
+
+### 8. Run TypeScript directly on Node, with no build step
+
+- **Decision:** Source runs as `.ts` via Node 24's native type stripping
+  (`node src/server.ts`). No bundler, no `tsx`, no `tsc` emit. `tsconfig.json`
+  sets `erasableSyntaxOnly` and `allowImportingTsExtensions`, and relative
+  imports carry explicit `.ts` extensions. `tsc` is used only for type checking.
+- **Reason:** Removes a build tool, a build step and a class of
+  source-map/output-drift problems from a project that deploys on-prem to a
+  single machine. Node 20+ is already a stated requirement.
+- **Alternatives considered:** `tsx` in development plus `tsc` emit for
+  production — a second toolchain and an extra dependency for no benefit at this
+  scale; bundling — unnecessary for a server that is not distributed.
+- **Consequence:** `erasableSyntaxOnly` forbids TypeScript enums and constructor
+  parameter properties. Both have plain equivalents already in use.
+- **Date:** 2026-09-02
+
+### 9. Unauthorized Telegram users are dropped silently, not told they are blocked
+
+- **Decision:** A message from a user who is not on the allowlist is
+  acknowledged with HTTP 200 and discarded. No reply is sent to that user; the
+  attempt is logged with the user ID.
+- **Reason:** Replying confirms to an unknown prober that a live accounting bot
+  sits behind the endpoint. Acknowledging with 200 stops Telegram from retrying
+  the update. The log entry still lets an operator notice a genuine user who
+  needs adding.
+- **Alternatives considered:** Replying "you are not authorized" — friendlier for
+  legitimate users but leaks the bot's existence and purpose; returning a non-2xx
+  status — would make Telegram retry the same rejected update repeatedly.
+- **Date:** 2026-09-02

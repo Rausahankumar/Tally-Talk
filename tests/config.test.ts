@@ -1,0 +1,107 @@
+import { describe, expect, it } from 'vitest';
+
+import { ConfigError, loadConfig } from '../src/config/index.ts';
+
+const VALID_TOKEN = '123456789:AAEEabcdefghijklmnopqrstuvwxyz0123456';
+const VALID_SECRET = 'a-webhook-secret-value';
+
+function validEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  return {
+    TELEGRAM_BOT_TOKEN: VALID_TOKEN,
+    TELEGRAM_WEBHOOK_SECRET: VALID_SECRET,
+    TELEGRAM_ALLOWED_USER_IDS: '111,222',
+    ...overrides,
+  };
+}
+
+function problemsFrom(env: NodeJS.ProcessEnv): readonly string[] {
+  try {
+    loadConfig(env);
+  } catch (error) {
+    if (error instanceof ConfigError) return error.problems;
+    throw error;
+  }
+  throw new Error('expected loadConfig to throw');
+}
+
+describe('loadConfig', () => {
+  it('parses a valid environment', () => {
+    const config = loadConfig(validEnv({ PORT: '8080', NODE_ENV: 'production' }));
+
+    expect(config.port).toBe(8080);
+    expect(config.nodeEnv).toBe('production');
+    expect(config.telegram.botToken).toBe(VALID_TOKEN);
+    expect(config.telegram.webhookSecret).toBe(VALID_SECRET);
+    expect([...config.telegram.allowedUserIds]).toEqual([111, 222]);
+  });
+
+  it('defaults port and environment when unset', () => {
+    const config = loadConfig(validEnv());
+
+    expect(config.port).toBe(3000);
+    expect(config.nodeEnv).toBe('development');
+  });
+
+  it('reports every missing required key at once', () => {
+    const problems = problemsFrom({});
+
+    expect(problems).toHaveLength(3);
+    expect(problems.join('\n')).toContain('TELEGRAM_BOT_TOKEN');
+    expect(problems.join('\n')).toContain('TELEGRAM_WEBHOOK_SECRET');
+    expect(problems.join('\n')).toContain('TELEGRAM_ALLOWED_USER_IDS');
+  });
+
+  it('treats whitespace-only values as missing', () => {
+    const problems = problemsFrom(validEnv({ TELEGRAM_BOT_TOKEN: '   ' }));
+
+    expect(problems.join('\n')).toContain('TELEGRAM_BOT_TOKEN is required');
+  });
+
+  it('rejects a malformed bot token without echoing it', () => {
+    const problems = problemsFrom(validEnv({ TELEGRAM_BOT_TOKEN: 'not-a-real-token' }));
+
+    expect(problems.join('\n')).toContain('not a valid bot token');
+    expect(problems.join('\n')).not.toContain('not-a-real-token');
+  });
+
+  it('rejects a webhook secret that is too short to resist guessing', () => {
+    const problems = problemsFrom(validEnv({ TELEGRAM_WEBHOOK_SECRET: 'short' }));
+
+    expect(problems.join('\n')).toContain('at least 16 characters');
+  });
+
+  it('rejects webhook secret characters Telegram will not accept', () => {
+    const problems = problemsFrom(validEnv({ TELEGRAM_WEBHOOK_SECRET: 'has spaces and $igns!' }));
+
+    expect(problems.join('\n')).toContain('may only contain');
+  });
+
+  it('rejects non-numeric entries in the allowlist', () => {
+    const problems = problemsFrom(validEnv({ TELEGRAM_ALLOWED_USER_IDS: '111,abc' }));
+
+    expect(problems.join('\n')).toContain('"abc"');
+  });
+
+  it('rejects a non-positive user id', () => {
+    const problems = problemsFrom(validEnv({ TELEGRAM_ALLOWED_USER_IDS: '0' }));
+
+    expect(problems.join('\n')).toContain('"0"');
+  });
+
+  it('rejects an allowlist with no usable ids', () => {
+    const problems = problemsFrom(validEnv({ TELEGRAM_ALLOWED_USER_IDS: ' , , ' }));
+
+    expect(problems.join('\n')).toContain('at least one Telegram user ID');
+  });
+
+  it('tolerates spacing around allowlist entries', () => {
+    const config = loadConfig(validEnv({ TELEGRAM_ALLOWED_USER_IDS: ' 111 , 222 ,333' }));
+
+    expect([...config.telegram.allowedUserIds]).toEqual([111, 222, 333]);
+  });
+
+  it('rejects an out-of-range port', () => {
+    expect(problemsFrom(validEnv({ PORT: '70000' })).join('\n')).toContain('between 1 and 65535');
+    expect(problemsFrom(validEnv({ PORT: 'abc' })).join('\n')).toContain('between 1 and 65535');
+  });
+});

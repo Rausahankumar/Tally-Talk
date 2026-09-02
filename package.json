@@ -8,13 +8,21 @@
     "node": ">=20"
   },
   "scripts": {
+    "start": "node --env-file=.env src/server.ts",
+    "dev": "node --env-file=.env --watch src/server.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
+    "@types/express": "^5.0.6",
     "@types/node": "^22.10.2",
+    "@types/supertest": "^7.2.1",
+    "supertest": "^7.2.2",
     "typescript": "^5.7.2",
     "vitest": "^4.1.11"
+  },
+  "dependencies": {
+    "express": "^5.2.1"
   }
 }
