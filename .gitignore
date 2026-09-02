@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Secrets — never commit real values (see .env.example)
+.env
+.env.*
+!.env.example
+
+# Local database (SQLite audit log)
+*.sqlite
+*.sqlite-journal
+*.db
+data/
+
+# Test / coverage output
+coverage/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

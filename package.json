@@ -1,0 +1,20 @@
+{
+  "name": "tallytalk",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Conversational AI assistant that creates TallyPrime vouchers from natural-language Telegram messages, with backend validation and explicit user confirmation.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.11"
+  }
+}
