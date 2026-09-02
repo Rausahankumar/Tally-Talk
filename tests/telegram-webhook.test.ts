@@ -42,6 +42,7 @@ const config: Config = {
   },
   databasePath: ':memory:',
   tally: { host: '127.0.0.1', port: 9000, companyName: 'Test Company' },
+  llm: { provider: 'anthropic', apiKey: 'test-api-key', model: 'claude-sonnet-5' },
 };
 
 function messageUpdate(userId: number, text: string): object {

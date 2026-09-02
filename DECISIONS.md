@@ -208,3 +208,37 @@ Important decisions only. Newest last.
   real Tally capability, but meaningful complexity for a problem that doesn't
   exist yet at this data volume.
 - **Date:** 2026-09-02
+
+### 16. Anthropic Claude, using forced tool-use for structured extraction
+
+- **Decision:** Phase 4's single LLM provider is Anthropic (Claude Sonnet 5 by
+  default), called via the Messages API with `tool_choice` forcing a call to
+  one tool (`record_transaction_draft`) whose `input_schema` is the draft
+  schema. Intent (`voucherType`) and field extraction happen in that one call.
+- **Reason:** Directed by the project owner. Forced tool-use makes the schema a
+  generation constraint the API enforces, not just a hope — closer to
+  structured output than prompting for JSON in prose and hoping it parses.
+  A raw `fetch` call was used instead of the `@anthropic-ai/sdk` package, for
+  the same reason the Telegram and Tally clients use raw `fetch`: one endpoint,
+  one call shape, no need for a full SDK's surface area, and it keeps `fetch`
+  trivially injectable for tests with no real network dependency.
+- **Alternatives considered:** `@anthropic-ai/sdk` — heavier than needed for one
+  call site; prompting for JSON without tool-use — no schema enforcement from
+  the API side, leaving more for the runtime validator to catch.
+- **Date:** 2026-09-02
+
+### 17. The runtime validator never trusts a tool call just because it matched
+
+- **Decision:** `parseTransactionDraft` re-validates every field of a model's
+  tool-use `input` from scratch — type, enum membership, no coercion, no extra
+  fields — even though `tool_choice` already constrains what the API should
+  return.
+- **Reason:** This project's core rule is that the backend never trusts LLM
+  output; a forced tool schema narrows what a well-behaved model will produce,
+  it does not guarantee it, and a client bug or an API change is still
+  possible. The validator is the actual enforcement point, not the API's
+  best-effort schema matching.
+- **Alternatives considered:** Trusting `tool_choice` output directly and
+  casting it to `TransactionDraft` — rejected outright; it is exactly the
+  "backend blindly trusts the AI" failure mode `CLAUDE.md` rules out.
+- **Date:** 2026-09-02

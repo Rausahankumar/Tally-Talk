@@ -4,39 +4,34 @@ _Last updated: 2026-09-02_
 
 ## Current phase
 
-Phase 3 — Tally XML client and master data sync. **Complete.**
+Phase 4 — LLM structured extraction. **Complete.**
 
 ## Current task
 
-None. Awaiting approval to begin Phase 4.
+None. Awaiting approval to begin Phase 5.
 
 ## Completed work
 
-**Phases 0–2** — foundation, Telegram webhook with secret + allowlist gates,
-append-only SQLite audit log. See git history for detail.
+**Phases 0–3** — foundation, Telegram webhook with security gates, append-only
+SQLite audit log, Tally master data sync. See git history for detail.
 
-**Phase 3 — Tally Master Data Sync**
-- `src/tally/xml.ts` — builds the TDL `COLLECTION` export request and parses the
-  response into raw string-valued records. Distinguishes a legitimately empty
-  collection, a rejected request (`<RESPONSE>Unknown Request...</RESPONSE>`),
-  and a non-success `STATUS` — three cases that look similar but mean different
-  things.
-- `src/tally/client.ts` — `TallyClient.exportCollection` only. **Export, never
-  Import** — there is no method here capable of writing to Tally, by design.
-  Injectable `fetch` and a 10s timeout so a closed TallyPrime fails fast.
-- `src/tally/masters.ts` — declares the five MVP master types (Ledger,
-  StockItem, Godown, Unit, VoucherType) and their field lists, and
-  `syncMasterData` to fetch and cache all of them.
-- `src/tally/cache.ts` + migration 2 (`tally_masters` table) — a resync
-  transactionally replaces one master type's rows; readers never see a
-  half-updated set.
-- `npm run tally:sync` — manual, on-demand sync CLI (no scheduled sync in this
-  phase, per MVP scope).
-- Every request shape and edge case was confirmed **live against the target
-  company** (Nirmal FMCG Traders Ltd) before being written into code; a real
-  captured response is the test fixture for the parser. Full sync run twice
-  live: 29 ledgers, 23 stock items, 12 godowns, 4 units, 27 voucher types, and
-  confirmed idempotent (95 rows both times, no duplication).
+**Phase 4 — LLM Structured Extraction**
+- `src/llm/schema.ts` — `TransactionDraft` type, the JSON Schema handed to
+  Anthropic as a forced tool signature, and `parseTransactionDraft`: a strict,
+  no-coercion runtime validator that re-checks every field regardless of the
+  forced schema. No total, GST amount, or subtotal field exists in the draft —
+  the model states facts, it does not compute.
+- `src/llm/prompts.ts` — the extraction system prompt, kept as its own module.
+- `src/llm/client.ts` — `createAnthropicClient`, one call per message via the
+  Messages API with `tool_choice` forcing `record_transaction_draft`, combining
+  intent (`voucherType`) and field extraction. `exportCollection`-style
+  injectable `fetch`; `LLMConnectionError` / `LLMResponseError` for network and
+  shape failures.
+- Config: `LLM_PROVIDER` (must be `anthropic`), `LLM_API_KEY` (required),
+  `LLM_MODEL` (defaults to `claude-sonnet-5`).
+- Not wired into the webhook yet — Phase 4 is the module in isolation. Nothing
+  in `src/llm/` references Tally, sends a Telegram reply, or has any
+  confirmation or write path.
 
 ## Work in progress
 
@@ -44,26 +39,22 @@ None.
 
 ## Next task
 
-Phase 4 — LLM module: provider-agnostic client, structured extraction schema,
-single call combining intent detection and field extraction. No validation or
-Tally posting yet; extraction output is not sent anywhere near Tally.
+Phase 5 — Validation + fuzzy matching + GST calculation: match a draft's
+`partyName` and item names against the Phase 3 master cache, compute GST/totals
+in backend code, and produce a validation result. Still no confirmation flow,
+still no Tally write.
 
 ## Known issues / blockers
 
 - No GitHub remote and `gh` CLI is not installed — local commits only.
-- `node:sqlite` remains experimental (accepted, `DECISIONS.md` #11).
 - No rate limiting yet (Phase 8).
-- LLM provider still undecided (deliberate, `DECISIONS.md` #3).
-- Master field lists are intentionally narrow (e.g. `Ledger` has no GST fields
-  yet); Phase 5 (validation) is expected to add fields as real validation rules
-  need them, not before.
+- `LLM_API_KEY` requires a real Anthropic key to run live; all Phase 4 automated
+  tests use an injected fake `fetch` and need no key. A real end-to-end call has
+  not been made — see the Phase 4 completion report for what that would need.
 
 ## Last important technical decision
 
-An ad-hoc `COLLECTION` export via Tally's TDL request shape was confirmed live
-to be the correct approach — the more obvious named-report shape (the one behind
-Tally's own "All Masters" file export) returns `Unknown Request, cannot be
-processed` for a custom collection; TDL's `<TYPE>COLLECTION</TYPE>` +
-`<TDL><TDLMESSAGE><COLLECTION>` shape is required. Also: the HTTP interface
-responds in plain UTF-8, unlike Tally's UTF-16LE file exports. `DECISIONS.md`
-#13.
+Extraction uses Anthropic's forced `tool_choice` for structured output, but the
+runtime validator (`parseTransactionDraft`) still re-checks the result from
+scratch rather than trusting the tool schema match — matching this project's
+rule that the backend never trusts LLM output. `DECISIONS.md` #16–17.

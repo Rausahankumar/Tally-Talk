@@ -21,6 +21,13 @@ export interface TallyConfig {
   readonly companyName: string;
 }
 
+export interface LLMConfig {
+  /** Only 'anthropic' is supported — the isolated LLM interface has one implementation. */
+  readonly provider: 'anthropic';
+  readonly apiKey: string;
+  readonly model: string;
+}
+
 export interface Config {
   readonly port: number;
   readonly nodeEnv: string;
@@ -28,6 +35,7 @@ export interface Config {
   /** Path to the SQLite file backing the audit log. */
   readonly databasePath: string;
   readonly tally: TallyConfig;
+  readonly llm: LLMConfig;
 }
 
 /** Raised when one or more environment values are missing or malformed. */
@@ -149,6 +157,20 @@ function parseTally(env: NodeJS.ProcessEnv, problems: string[]): TallyConfig {
   return { host, port, companyName };
 }
 
+const DEFAULT_LLM_MODEL = 'claude-sonnet-5';
+
+function parseLLM(env: NodeJS.ProcessEnv, problems: string[]): LLMConfig {
+  const rawProvider = env.LLM_PROVIDER?.trim() || 'anthropic';
+  if (rawProvider !== 'anthropic') {
+    problems.push(`LLM_PROVIDER must be "anthropic" (got "${rawProvider}") — no other provider is implemented`);
+  }
+
+  const apiKey = readRequired(env, 'LLM_API_KEY', problems) ?? '';
+  const model = env.LLM_MODEL?.trim() || DEFAULT_LLM_MODEL;
+
+  return { provider: 'anthropic', apiKey, model };
+}
+
 function parsePort(env: NodeJS.ProcessEnv, problems: string[]): number {
   const raw = env.PORT?.trim();
   if (!raw) return 3000;
@@ -179,6 +201,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     },
     databasePath: parseDatabasePath(env, problems),
     tally: parseTally(env, problems),
+    llm: parseLLM(env, problems),
   };
 
   if (problems.length > 0) throw new ConfigError(problems);

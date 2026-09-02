@@ -13,12 +13,15 @@ causes a write on its own.
 
 ## Status
 
-Phase 3 complete. The Express server accepts Telegram webhook updates, verifies
+Phase 4 complete. The Express server accepts Telegram webhook updates, verifies
 the secret token, checks the sender against the allowlist, appends every inbound
 message and authorization outcome to an append-only SQLite audit log, and echoes
 the message back. A separate, manual command syncs and caches TallyPrime master
-data (ledgers, stock items, godowns, units, voucher types) read-only. No LLM,
-Tally posting or conversation logic yet. See `PROJECT_STATUS.md`.
+data (ledgers, stock items, godowns, units, voucher types) read-only. A
+standalone LLM module (`src/llm/`) can turn a message into a structured,
+schema-validated transaction draft via Anthropic Claude — it is not yet wired
+into the webhook. No validation against Tally masters, no confirmation flow, and
+no Tally write yet. See `PROJECT_STATUS.md`.
 
 ## Requirements
 

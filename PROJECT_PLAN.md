@@ -127,8 +127,8 @@ small/cheap model behind a swappable interface; prompt caching where supported.
 | 1 | Telegram webhook slice: secret verification, allowlist, echo reply | ✅ Complete |
 | 2 | SQLite setup and append-only audit log | ✅ Complete |
 | 3 | Tally XML client + master data sync and cache | ✅ Complete |
-| 4 | LLM module: structured extraction schema and single-call extraction | Next |
-| 5 | Validation + fuzzy matching + GST calculation | Planned |
+| 4 | LLM module: structured extraction schema and single-call extraction | ✅ Complete |
+| 5 | Validation + fuzzy matching + GST calculation | Next |
 | 6 | Conversation state and multi-turn slot filling | Planned |
 | 7 | Preview, Confirm/Cancel, idempotent Sales Invoice posting | Planned |
 | 8 | Hardening: rate limiting, Tally failure handling, retries | Planned |

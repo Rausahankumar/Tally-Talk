@@ -11,6 +11,7 @@ function validEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     TELEGRAM_WEBHOOK_SECRET: VALID_SECRET,
     TELEGRAM_ALLOWED_USER_IDS: '111,222',
     TALLY_COMPANY_NAME: 'Nirmal FMCG Traders Ltd',
+    LLM_API_KEY: 'sk-ant-test-key-not-real',
     ...overrides,
   };
 }
@@ -46,11 +47,12 @@ describe('loadConfig', () => {
   it('reports every missing required key at once', () => {
     const problems = problemsFrom({});
 
-    expect(problems).toHaveLength(4);
+    expect(problems).toHaveLength(5);
     expect(problems.join('\n')).toContain('TELEGRAM_BOT_TOKEN');
     expect(problems.join('\n')).toContain('TELEGRAM_WEBHOOK_SECRET');
     expect(problems.join('\n')).toContain('TELEGRAM_ALLOWED_USER_IDS');
     expect(problems.join('\n')).toContain('TALLY_COMPANY_NAME');
+    expect(problems.join('\n')).toContain('LLM_API_KEY');
   });
 
   it('treats whitespace-only values as missing', () => {
@@ -148,5 +150,28 @@ describe('loadConfig', () => {
 
   it('rejects an out-of-range Tally port', () => {
     expect(problemsFrom(validEnv({ TALLY_PORT: '99999' })).join('\n')).toContain('TALLY_PORT');
+  });
+
+  it('defaults the LLM provider and model', () => {
+    const config = loadConfig(validEnv());
+
+    expect(config.llm.provider).toBe('anthropic');
+    expect(config.llm.model).toBe('claude-sonnet-5');
+  });
+
+  it('reads an explicit LLM model', () => {
+    expect(loadConfig(validEnv({ LLM_MODEL: 'claude-opus-5' })).llm.model).toBe('claude-opus-5');
+  });
+
+  it('requires an LLM API key', () => {
+    expect(problemsFrom(validEnv({ LLM_API_KEY: '' })).join('\n')).toContain(
+      'LLM_API_KEY is required',
+    );
+  });
+
+  it('rejects a provider other than anthropic, since none other is implemented', () => {
+    expect(problemsFrom(validEnv({ LLM_PROVIDER: 'openai' })).join('\n')).toContain(
+      'LLM_PROVIDER must be "anthropic"',
+    );
   });
 });
