@@ -2,7 +2,8 @@
  * Telegram webhook route.
  *
  * Enforces the two security gates, in order, before anything else happens with
- * a request:
+ * a request, for every kind of update this bot handles — a text message or a
+ * Confirm/Cancel button tap alike:
  *
  *   1. The request carries the exact `X-Telegram-Bot-Api-Secret-Token` value
  *      configured for this deployment — otherwise it did not come from
@@ -10,21 +11,28 @@
  *   2. The sending Telegram user is on the allowlist — otherwise the update is
  *      acknowledged and dropped without any further processing.
  *
+ * After the gates, the update is dispatched to the conversation layer
+ * (`src/conversation/`), which owns extraction, validation, state, and
+ * replies. This file's job stops at transport and security — it does not
+ * decide what a message means or what to say back.
+ *
  * Every inbound message and every authorization outcome is appended to the
- * audit log under one `correlationId`, so a whole user turn can be replayed
- * later. Later phases add LLM extraction, validation and Tally posting *after*
- * these gates, appending to the same correlation id; nothing may be inserted
- * before them.
+ * audit log under one `correlationId`, so a whole turn can be replayed later.
  */
 
 import { randomUUID, timingSafeEqual } from 'node:crypto';
+import type { DatabaseSync } from 'node:sqlite';
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 
 import type { AuditLog } from '../../audit/log.ts';
 import type { Logger } from '../../logger.ts';
+import type { LLMClient } from '../../llm/client.ts';
+import type { ConversationStore } from '../../conversation/store.ts';
+import { handleCallbackQuery } from '../../conversation/handleCallback.ts';
+import { handleIncomingTextMessage } from '../../conversation/handleMessage.ts';
 import type { TelegramClient } from './client.ts';
-import { parseIncomingMessage } from './types.ts';
+import { parseCallbackQuery, parseIncomingMessage } from './types.ts';
 
 export const SECRET_TOKEN_HEADER = 'x-telegram-bot-api-secret-token';
 
@@ -32,6 +40,9 @@ export interface TelegramWebhookDeps {
   readonly webhookSecret: string;
   readonly allowedUserIds: ReadonlySet<number>;
   readonly telegram: TelegramClient;
+  readonly llm: LLMClient;
+  readonly db: DatabaseSync;
+  readonly conversationStore: ConversationStore;
   readonly auditLog: AuditLog;
   readonly logger: Logger;
 }
@@ -74,32 +85,38 @@ export function createTelegramWebhookRouter(deps: TelegramWebhookDeps): Router {
     }
 
     const message = parseIncomingMessage(req.body);
-    if (message === null) {
-      // Not something this phase handles (edited message, callback query,
-      // non-text media). Acknowledge so Telegram does not retry it. Nothing is
-      // audited: there is no message and no identified actor to record.
-      deps.logger.info('Ignoring update with no handleable text message');
+    const callbackQuery = message === null ? parseCallbackQuery(req.body) : null;
+
+    if (message === null && callbackQuery === null) {
+      // Not something this bot handles (edited message, non-text media, a
+      // callback with unrecognised data). Acknowledge so Telegram does not
+      // retry it. Nothing is audited: there is no identified actor to record.
+      deps.logger.info('Ignoring update with no handleable message or callback query');
       res.status(200).json({ ok: true });
       return;
     }
 
-    const actor = { kind: 'user' as const, telegramUserId: message.userId, chatId: message.chatId };
+    const userId = message?.userId ?? callbackQuery!.userId;
+    const chatId = message?.chatId ?? callbackQuery!.chatId;
+    const actor = { kind: 'user' as const, telegramUserId: userId, chatId };
 
-    deps.auditLog.record({
-      correlationId,
-      type: 'message.received',
-      channel: 'telegram',
-      actor,
-      // The raw message is the first line of the audit trail: "what did the
-      // user actually say?" It stays on-premises with the rest of the log.
-      data: { text: message.text },
-    });
+    if (message !== null) {
+      deps.auditLog.record({
+        correlationId,
+        type: 'message.received',
+        channel: 'telegram',
+        actor,
+        // The raw message is the first line of the audit trail: "what did the
+        // user actually say?" It stays on-premises with the rest of the log.
+        data: { text: message.text },
+      });
+    }
 
-    if (!deps.allowedUserIds.has(message.userId)) {
+    if (!deps.allowedUserIds.has(userId)) {
       // Silent drop: replying would confirm to an unauthorized prober that a
       // live bot sits behind this endpoint. Still acknowledged, and recorded so
       // an operator can see the attempt and add the user if it was genuine.
-      deps.logger.warn('Rejected message from user not on allowlist', { userId: message.userId });
+      deps.logger.warn('Rejected update from user not on allowlist', { userId });
       deps.auditLog.record({
         correlationId,
         type: 'authorization.denied',
@@ -118,11 +135,41 @@ export function createTelegramWebhookRouter(deps: TelegramWebhookDeps): Router {
       actor,
     });
 
-    // Phase 1 behaviour, unchanged: echo the text back. Extraction, validation,
-    // preview, confirmation and Tally posting arrive in later phases.
-    await deps.telegram.sendMessage(message.chatId, `TallyTalk received: ${message.text}`);
+    try {
+      if (message !== null) {
+        await handleIncomingTextMessage(
+          {
+            db: deps.db,
+            llm: deps.llm,
+            telegram: deps.telegram,
+            conversationStore: deps.conversationStore,
+            auditLog: deps.auditLog,
+          },
+          { chatId: message.chatId, userId: message.userId, text: message.text, correlationId },
+        );
+      } else {
+        await handleCallbackQuery(
+          { telegram: deps.telegram, conversationStore: deps.conversationStore, auditLog: deps.auditLog },
+          {
+            chatId: callbackQuery!.chatId,
+            userId: callbackQuery!.userId,
+            callbackQueryId: callbackQuery!.callbackQueryId,
+            action: callbackQuery!.action,
+            draftVersionId: callbackQuery!.draftVersionId,
+            correlationId,
+          },
+        );
+      }
+    } catch (error) {
+      // A failure inside the conversation layer must not surface as an
+      // unhandled rejection or a 500 that makes Telegram retry a request that
+      // may have already partially applied — acknowledge and log instead.
+      deps.logger.error('Failed to process authorized update', {
+        userId,
+        reason: error instanceof Error ? error.message : String(error),
+      });
+    }
 
-    deps.logger.info('Echoed message back to authorized user', { userId: message.userId });
     res.status(200).json({ ok: true });
   });
 

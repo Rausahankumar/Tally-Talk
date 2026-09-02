@@ -8,8 +8,30 @@ import type { TelegramClient } from '../src/channels/telegram/client.ts';
 import { silentLogger } from '../src/logger.ts';
 import { createAuditLog } from '../src/audit/log.ts';
 import type { AuditLog } from '../src/audit/log.ts';
+import { createConversationStore } from '../src/conversation/store.ts';
+import type { ConversationStore } from '../src/conversation/store.ts';
+import type { LLMClient } from '../src/llm/client.ts';
+import type { TransactionDraft } from '../src/llm/schema.ts';
 import type { Database } from '../src/db/sqlite.ts';
 import { createTestDatabase } from './helpers/testDatabase.ts';
+
+/** A draft that extracts to "nothing usable" — deterministic, no real LLM call. */
+const UNKNOWN_DRAFT: TransactionDraft = {
+  voucherType: 'unknown',
+  partyName: null,
+  items: [],
+  gstPercent: null,
+  missingFields: ['voucherType', 'partyName', 'items', 'gstPercent'],
+  ambiguityNote: null,
+};
+
+function createFakeLLMClient(draft: TransactionDraft = UNKNOWN_DRAFT): LLMClient {
+  return {
+    async extractTransactionDraft(): Promise<TransactionDraft> {
+      return draft;
+    },
+  };
+}
 
 const WEBHOOK_SECRET = 'correct-webhook-secret';
 const AUTHORIZED_USER_ID = 111;
@@ -29,6 +51,7 @@ function createFakeTelegramClient(): TelegramClient & { readonly sent: SentMessa
     async sendMessage(chatId: number, text: string): Promise<void> {
       sent.push({ chatId, text });
     },
+    async answerCallbackQuery(): Promise<void> {},
   };
 }
 
@@ -60,13 +83,23 @@ function messageUpdate(userId: number, text: string): object {
 let telegram: ReturnType<typeof createFakeTelegramClient>;
 let database: Database;
 let auditLog: AuditLog;
+let conversationStore: ConversationStore;
 let app: ReturnType<typeof createApp>;
 
 beforeEach(() => {
   telegram = createFakeTelegramClient();
   database = createTestDatabase();
   auditLog = createAuditLog({ db: database.db, logger: silentLogger });
-  app = createApp({ config, telegram, auditLog, logger: silentLogger });
+  conversationStore = createConversationStore(database.db);
+  app = createApp({
+    config,
+    telegram,
+    llm: createFakeLLMClient(),
+    db: database.db,
+    conversationStore,
+    auditLog,
+    logger: silentLogger,
+  });
 });
 
 afterEach(() => {
@@ -149,16 +182,17 @@ describe('user allowlist', () => {
     expect(telegram.sent).toHaveLength(0);
   });
 
-  it('echoes a message from an authorized user', async () => {
+  it('lets an authorized user reach the conversation layer and get a reply', async () => {
     const response = await request(app)
       .post(TELEGRAM_WEBHOOK_PATH)
       .set(SECRET_TOKEN_HEADER, WEBHOOK_SECRET)
       .send(messageUpdate(AUTHORIZED_USER_ID, 'sell 100 bags to Ramesh'));
 
     expect(response.status).toBe(200);
-    expect(telegram.sent).toEqual([
-      { chatId: CHAT_ID, text: 'TallyTalk received: sell 100 bags to Ramesh' },
-    ]);
+    // The exact reply is the conversation layer's concern (see the dedicated
+    // Phase 6 flow tests) — this only proves the gates let the message through.
+    expect(telegram.sent).toHaveLength(1);
+    expect(telegram.sent[0]?.chatId).toBe(CHAT_ID);
   });
 });
 
@@ -231,14 +265,17 @@ describe('audit trail', () => {
     expect(events[1]?.telegram_user_id).toBe(UNAUTHORIZED_USER_ID);
   });
 
-  it('records the message and the grant for an authorized user', async () => {
+  it('records the message and the grant for an authorized user before anything else', async () => {
     await request(app)
       .post(TELEGRAM_WEBHOOK_PATH)
       .set(SECRET_TOKEN_HEADER, WEBHOOK_SECRET)
       .send(messageUpdate(AUTHORIZED_USER_ID, 'sell 100 bags to Ramesh'));
 
     const events = recordedEvents();
-    expect(events.map((e) => e.type)).toEqual(['message.received', 'authorization.granted']);
+    expect(events.slice(0, 2).map((e) => e.type)).toEqual([
+      'message.received',
+      'authorization.granted',
+    ]);
     expect(events[0]?.telegram_user_id).toBe(AUTHORIZED_USER_ID);
     expect(events[0]?.chat_id).toBe(CHAT_ID);
   });
@@ -253,7 +290,10 @@ describe('audit trail', () => {
     expect(correlationIds.size).toBe(1);
 
     const [correlationId] = [...correlationIds];
-    expect(auditLog.findByCorrelationId(correlationId as string)).toHaveLength(2);
+    // message.received, authorization.granted, llm.extraction.completed,
+    // validation.completed, draft.created — the conversation layer's own
+    // tests cover the exact content of each.
+    expect(auditLog.findByCorrelationId(correlationId as string).length).toBeGreaterThanOrEqual(2);
   });
 
   it('gives separate turns separate correlation ids', async () => {

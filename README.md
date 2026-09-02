@@ -13,18 +13,15 @@ causes a write on its own.
 
 ## Status
 
-Phase 5 complete. The Express server accepts Telegram webhook updates, verifies
-the secret token, checks the sender against the allowlist, appends every inbound
-message and authorization outcome to an append-only SQLite audit log, and echoes
-the message back. A separate, manual command syncs and caches TallyPrime master
-data (ledgers, stock items, godowns, units, voucher types) read-only. A
-standalone LLM module (`src/llm/`) can turn a message into a structured,
-schema-validated transaction draft via Anthropic Claude, and a standalone
-validation module (`src/validation/`) can deterministically check that draft
-against the cached master data (exact and fuzzy name matching, required
-fields, quantity/rate sanity, GST slab validity) — neither is wired into the
-webhook yet. No confirmation flow and no Tally write yet. See
-`PROJECT_STATUS.md`.
+Phase 6 complete. A Telegram message now flows end to end: the webhook (secret
+token + allowlist checks unchanged) hands the text to the Anthropic-backed LLM
+module for structured extraction, validates the result against the cached
+TallyPrime master data, tracks the draft per chat across follow-up messages
+(filling in missing fields, resolving ambiguous ledger/item matches from a
+plain reply), and — once everything checks out — sends a preview with explicit
+Confirm/Cancel buttons. Confirming only marks the draft as approved; **nothing
+is sent to Tally yet**. A separate, manual command syncs and caches TallyPrime
+master data read-only. See `PROJECT_STATUS.md`.
 
 ## Requirements
 

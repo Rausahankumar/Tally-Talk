@@ -296,3 +296,85 @@ Important decisions only. Newest last.
   not user-typed free text, so a close-but-wrong fuzzy match would be a real
   misconfiguration risk with no corresponding benefit.
 - **Date:** 2026-09-02
+
+### 21. Confirm/Cancel safety via a versioned, compare-and-set draft state machine
+
+- **Decision:** Every draft stored in `conversation_drafts` carries a
+  `draft_version_id` that changes on every create or update. Confirm/Cancel
+  buttons embed that version in their `callback_data`. Acting on a tap goes
+  through `setStatusIfCurrent`, a single SQL `UPDATE ... WHERE chat_id = ? AND
+  telegram_user_id = ? AND draft_version_id = ? AND status = ?` — it only
+  succeeds if every one of those still matches exactly what the callback
+  claims.
+- **Reason:** This one mechanism covers every safety requirement at once: a
+  stale button (superseded draft) fails on version mismatch; a duplicate tap
+  fails because the second attempt's expected status (`ready_for_confirmation`)
+  no longer matches the first attempt's result (`confirmed`); a forged or
+  cross-chat callback fails on chat/user mismatch; a race between two
+  concurrent taps fails for whichever one the database serializes second,
+  atomically, with no separate locking needed. No callback is ever trusted by
+  itself — only what the database still says is current.
+- **Alternatives considered:** A separate "used tokens" table to explicitly
+  block replays — redundant once the state machine's own status transition
+  already makes a second use impossible; optimistic version checking in
+  application code (read, compare, then write) — has a real race window between
+  the read and the write that a single conditional `UPDATE` does not.
+- **Date:** 2026-09-02
+
+### 22. Multi-turn continuation is a deterministic merge, not LLM-provided context
+
+- **Decision:** A follow-up message is extracted by Anthropic standalone,
+  exactly like a first message — Phase 4's `extractTransactionDraft` was not
+  changed to accept prior-draft context. Combining old and new information is a
+  plain function (`mergeDraft`): a field the new extraction actually stated
+  overrides the old value, a field it left blank keeps what was already known.
+- **Reason:** The task's own caution against modifying Phase 4 unless an actual
+  integration issue requires it, weighed against the alternative: giving the
+  model prior-draft context would require prompt changes whose effect on real
+  model behaviour cannot be verified without a live API key, which this phase
+  does not use in its automated tests. A deterministic merge is fully testable
+  with mocked extractions and keeps every Phase 4 test passing unmodified.
+- **Limitation this creates:** a bare correction like "actually make that 200"
+  with no other context relies on the model still returning a sensible
+  standalone extraction for that fragment; this has not been verified against
+  the real Anthropic API (no key used in this phase). Disambiguation replies
+  avoid this risk entirely — they are resolved by deterministic candidate
+  matching (`resolveClarificationReply`) and never sent to the LLM at all.
+- **Alternatives considered:** Extending Phase 4's client to accept optional
+  prior-draft context per the original plan's "send the running draft + latest
+  message" design — deferred until real API testing can confirm the model
+  reconciles context well; a hand-written field-by-field NLP merge — rejected
+  as exactly the kind of brittle heuristic the project delegates to the LLM.
+- **Date:** 2026-09-02
+
+### 23. Ambiguity is resolved deterministically from the user's reply, never by another LLM call
+
+- **Decision:** When validation reports an ambiguous ledger or stock item
+  match, the very next message is first checked against the offered candidates
+  using Phase 5's own `matchName` (exact then fuzzy). Only if that fails to
+  resolve does the message go to the LLM as a normal new extraction.
+- **Reason:** Interpreting "which of these two options did you mean" is a
+  small, closed-set decision — exactly what deterministic matching already does
+  reliably elsewhere in this project, and it stays consistent with the core
+  rule that the backend decides, not the model. It also means disambiguation
+  requires no live-API verification (see decision #22's limitation) — it works
+  identically whether or not the model would have handled a bare name reply
+  well.
+- **Date:** 2026-09-02
+
+### 24. Widening the audit event CHECK constraint via SQLite's recreate-table pattern
+
+- **Decision:** Adding the Phase 6 event types to `audit_events.type`'s CHECK
+  constraint required a genuine migration (migration 3): drop the two
+  append-only triggers, rename the table aside, create it fresh with the wider
+  constraint, copy every row across, drop the old table, then recreate the
+  three indexes and two triggers.
+- **Reason:** SQLite has no `ALTER TABLE ... DROP/ADD CONSTRAINT`. This is the
+  standard, correct way to change one. Doing it explicitly — rather than
+  relying on however a given SQLite build treats trigger definitions across a
+  bare `ALTER TABLE ... RENAME` — means the migration's correctness does not
+  depend on an assumption that was never verified against this project's
+  actual SQLite version. Verified directly before use: existing rows and event
+  types survive the migration, and the append-only triggers still block UPDATE
+  and DELETE afterward.
+- **Date:** 2026-09-02

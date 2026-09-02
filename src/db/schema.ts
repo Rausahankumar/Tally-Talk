@@ -13,6 +13,7 @@ import type { Logger } from '../logger.ts';
 
 export const AUDIT_EVENTS_TABLE = 'audit_events';
 export const TALLY_MASTERS_TABLE = 'tally_masters';
+export const CONVERSATION_DRAFTS_TABLE = 'conversation_drafts';
 
 /** Render a string list as a SQL `IN (...)` value list. */
 function sqlList(values: readonly string[]): string {
@@ -88,8 +89,96 @@ CREATE TABLE ${TALLY_MASTERS_TABLE} (
 CREATE INDEX idx_tally_masters_type ON ${TALLY_MASTERS_TABLE} (master_type);
 `;
 
+/**
+ * Migration 3 — widen `audit_events.type` to accept the Phase 6 event
+ * vocabulary (draft.created, draft.updated, preview.shown,
+ * confirmation.rejected — `user.confirmed`/`user.cancelled` were already
+ * accepted, just unused until now).
+ *
+ * SQLite has no `ALTER TABLE ... DROP/ADD CONSTRAINT`. The standard, correct
+ * way to change a CHECK constraint is to rename the table aside, recreate it
+ * with the new constraint, copy the rows across, then drop the old one — done
+ * explicitly here (including dropping and recreating the triggers and
+ * indexes) rather than relying on however a given SQLite build treats
+ * triggers across a bare table rename.
+ */
+const MIGRATION_3 = `
+DROP TRIGGER ${AUDIT_EVENTS_TABLE}_no_update;
+DROP TRIGGER ${AUDIT_EVENTS_TABLE}_no_delete;
+ALTER TABLE ${AUDIT_EVENTS_TABLE} RENAME TO ${AUDIT_EVENTS_TABLE}_v1;
+
+CREATE TABLE ${AUDIT_EVENTS_TABLE} (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  schema_version   INTEGER NOT NULL,
+  correlation_id   TEXT    NOT NULL,
+  occurred_at      TEXT    NOT NULL,
+  type             TEXT    NOT NULL CHECK (type IN (${sqlList(AUDIT_EVENT_TYPES)})),
+  channel          TEXT    NOT NULL CHECK (channel IN (${sqlList(AUDIT_CHANNELS)})),
+  actor_kind       TEXT    NOT NULL CHECK (actor_kind IN (${sqlList(AUDIT_ACTOR_KINDS)})),
+  telegram_user_id INTEGER,
+  chat_id          INTEGER,
+  data             TEXT    NOT NULL CHECK (json_valid(data))
+);
+
+INSERT INTO ${AUDIT_EVENTS_TABLE}
+  SELECT * FROM ${AUDIT_EVENTS_TABLE}_v1;
+
+DROP TABLE ${AUDIT_EVENTS_TABLE}_v1;
+
+CREATE INDEX idx_audit_events_correlation
+  ON ${AUDIT_EVENTS_TABLE} (correlation_id, occurred_at);
+
+CREATE INDEX idx_audit_events_occurred_at
+  ON ${AUDIT_EVENTS_TABLE} (occurred_at DESC);
+
+CREATE INDEX idx_audit_events_user
+  ON ${AUDIT_EVENTS_TABLE} (telegram_user_id, occurred_at DESC);
+
+CREATE TRIGGER ${AUDIT_EVENTS_TABLE}_no_update
+BEFORE UPDATE ON ${AUDIT_EVENTS_TABLE}
+BEGIN
+  SELECT RAISE(ABORT, 'audit_events is append-only: updates are not permitted');
+END;
+
+CREATE TRIGGER ${AUDIT_EVENTS_TABLE}_no_delete
+BEFORE DELETE ON ${AUDIT_EVENTS_TABLE}
+BEGIN
+  SELECT RAISE(ABORT, 'audit_events is append-only: deletes are not permitted');
+END;
+`;
+
+/**
+ * Migration 4 — per-chat conversation state.
+ *
+ * One row per Telegram chat (`chat_id` is the primary key): a chat has at most
+ * one active draft at a time, and a new draft for the same chat replaces it
+ * outright. Unlike `audit_events`, this is live, mutable state, not a log —
+ * no append-only triggers here.
+ *
+ * `draft_version_id` is what makes Confirm/Cancel safe: it changes every time
+ * the draft is created or materially updated, and is embedded in the inline
+ * button's callback data. A confirm/cancel is only honoured if the version in
+ * the callback still matches the version currently stored — anything else
+ * (a superseded draft, a second tap on an old message, a forged callback) is
+ * rejected server-side rather than trusted from the callback alone.
+ */
+const MIGRATION_4 = `
+CREATE TABLE ${CONVERSATION_DRAFTS_TABLE} (
+  chat_id           INTEGER PRIMARY KEY,
+  telegram_user_id  INTEGER NOT NULL,
+  draft_version_id  TEXT    NOT NULL,
+  status            TEXT    NOT NULL CHECK (status IN ('collecting', 'ready_for_confirmation', 'confirmed', 'cancelled', 'expired')),
+  draft_json        TEXT    NOT NULL CHECK (json_valid(draft_json)),
+  validation_json   TEXT    NOT NULL CHECK (json_valid(validation_json)),
+  pending_json      TEXT    CHECK (pending_json IS NULL OR json_valid(pending_json)),
+  created_at        TEXT    NOT NULL,
+  updated_at        TEXT    NOT NULL,
+  expires_at        TEXT    NOT NULL
+);
+`;
+
 /** Ordered migrations. Append to this list; never edit an applied entry. */
-const MIGRATIONS: readonly string[] = [MIGRATION_1, MIGRATION_2];
+const MIGRATIONS: readonly string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.length;
 

@@ -5,11 +5,14 @@
  * dependencies and no listening socket.
  */
 
+import type { DatabaseSync } from 'node:sqlite';
 import express from 'express';
 import type { Express, NextFunction, Request, Response } from 'express';
 
 import type { AuditLog } from './audit/log.ts';
 import type { Config } from './config/index.ts';
+import type { ConversationStore } from './conversation/store.ts';
+import type { LLMClient } from './llm/client.ts';
 import type { Logger } from './logger.ts';
 import { consoleLogger } from './logger.ts';
 import type { TelegramClient } from './channels/telegram/client.ts';
@@ -23,6 +26,9 @@ const MAX_BODY_SIZE = '64kb';
 export interface AppDeps {
   readonly config: Config;
   readonly telegram: TelegramClient;
+  readonly llm: LLMClient;
+  readonly db: DatabaseSync;
+  readonly conversationStore: ConversationStore;
   readonly auditLog: AuditLog;
   readonly logger?: Logger;
 }
@@ -44,6 +50,9 @@ export function createApp(deps: AppDeps): Express {
       webhookSecret: deps.config.telegram.webhookSecret,
       allowedUserIds: deps.config.telegram.allowedUserIds,
       telegram: deps.telegram,
+      llm: deps.llm,
+      db: deps.db,
+      conversationStore: deps.conversationStore,
       auditLog: deps.auditLog,
       logger,
     }),

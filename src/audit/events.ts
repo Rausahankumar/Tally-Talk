@@ -32,9 +32,14 @@ export const AUDIT_EVENT_TYPES = [
   'llm.extraction.completed',
   // Phase 5 — deterministic validation
   'validation.completed',
-  // Phase 7 — confirmation and posting
+  // Phase 6 — conversation state and confirmation
+  'draft.created',
+  'draft.updated',
+  'preview.shown',
   'user.confirmed',
   'user.cancelled',
+  'confirmation.rejected',
+  // Phase 7 — Tally posting
   'tally.request.sent',
   'tally.response.received',
 ] as const;

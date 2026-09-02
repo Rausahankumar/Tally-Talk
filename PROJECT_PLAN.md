@@ -95,7 +95,10 @@ is only emitted by the phase that owns it:
 | `authorization.granted` / `authorization.denied` | Phase 2 |
 | `llm.extraction.completed` | Phase 4 |
 | `validation.completed` | Phase 5 |
-| `user.confirmed` / `user.cancelled` | Phase 7 |
+| `draft.created` / `draft.updated` | Phase 6 |
+| `preview.shown` | Phase 6 |
+| `user.confirmed` / `user.cancelled` | Phase 6 |
+| `confirmation.rejected` | Phase 6 |
 | `tally.request.sent` / `tally.response.received` | Phase 7 |
 
 ## Security requirements
@@ -129,8 +132,8 @@ small/cheap model behind a swappable interface; prompt caching where supported.
 | 3 | Tally XML client + master data sync and cache | ✅ Complete |
 | 4 | LLM module: structured extraction schema and single-call extraction | ✅ Complete |
 | 5 | Validation + fuzzy matching + GST rate validity check | ✅ Complete |
-| 6 | Conversation state and multi-turn slot filling | Next |
-| 7 | Preview, Confirm/Cancel, idempotent Sales Invoice posting | Planned |
+| 6 | Conversation state, multi-turn slot filling, preview, Confirm/Cancel | ✅ Complete |
+| 7 | Idempotent Sales Invoice posting to Tally | Next |
 | 8 | Hardening: rate limiting, Tally failure handling, retries | Planned |
 
 Phase boundaries may be adjusted as work proceeds; each phase requires explicit
