@@ -133,7 +133,7 @@ small/cheap model behind a swappable interface; prompt caching where supported.
 | 4 | LLM module: structured extraction schema and single-call extraction | ✅ Complete |
 | 5 | Validation + fuzzy matching + GST rate validity check | ✅ Complete |
 | 6 | Conversation state, multi-turn slot filling, preview, Confirm/Cancel | ✅ Complete |
-| 7 | Idempotent Sales Invoice posting to Tally | Next |
+| 7 | Idempotent Sales Invoice posting to Tally | 🟡 Posting mechanism complete; wiring to a real confirmed draft blocked on a ledger-mapping decision (see PROJECT_STATUS.md) |
 | 8 | Hardening: rate limiting, Tally failure handling, retries | Planned |
 
 Phase boundaries may be adjusted as work proceeds; each phase requires explicit

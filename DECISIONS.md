@@ -378,3 +378,66 @@ Important decisions only. Newest last.
   types survive the migration, and the append-only triggers still block UPDATE
   and DELETE afterward.
 - **Date:** 2026-09-02
+
+### 25. Duplicate/concurrent posting protection is one primary-key INSERT, no retries ever
+
+- **Decision:** `tally_postings.draft_version_id` is the table's primary key.
+  `beginPosting` does a single `INSERT`; whichever caller's insert succeeds
+  proceeds to contact Tally, every other caller for the same draft version —
+  a duplicate confirmation callback, a genuinely concurrent request, a caller
+  retrying because it never saw the first response — gets the existing row
+  back instead. Once a row exists at all, no second attempt is ever made for
+  that draft version, regardless of whether it ended in `posted`, `failed`, or
+  `uncertain`.
+- **Reason:** A `failed` or `uncertain` outcome does not prove Tally never
+  processed the request — the failure could have happened after Tally created
+  the voucher but before the response reached this backend. Automatically
+  retrying in that case risks a real duplicate voucher in the user's books,
+  which is a materially worse outcome than a transaction that needs a human to
+  look at it once. The primary-key insert is also what makes concurrency safe
+  with zero additional locking: SQLite's constraint check is atomic within the
+  single `INSERT` statement.
+- **Alternatives considered:** A `posted_at IS NULL` guard checked before an
+  `UPDATE` (read-then-write) — has a real race window between the read and the
+  write that the primary-key insert does not; allowing automatic retry of
+  `uncertain` outcomes with an idempotency key sent to Tally — Tally's XML
+  Import interface has no documented idempotency-key support to verify this
+  against, so it was not assumed.
+- **Date:** 2026-09-02
+
+### 26. `postConfirmedTransaction` takes a fully-resolved voucher, not a bare `TransactionDraft`
+
+- **Decision:** The posting module's input type requires the caller to supply
+  the sales/tax ledger allocations, quantities, rates, and units already
+  resolved — it does not accept a `TransactionDraft` and derive a voucher from
+  it automatically.
+- **Reason:** The existing validated transaction structure (`TransactionDraft`
+  + `DraftValidationResult`) does not carry enough information to safely build
+  a correct Tally voucher — see the Phase 7 completion report for the specific
+  missing fields (sales/purchase ledger name, GST ledger names and the
+  intra-state/inter-state split, godown) and which phase would need to grow to
+  supply them. Rather than guess at any of that — explicitly disallowed for
+  a system that posts to a real accounting ledger — the posting layer's
+  contract is honest about exactly what it needs, and `postConfirmedTransaction`
+  is not yet wired to any real confirmed conversation draft.
+- **Consequence:** Phase 7 delivers a complete, safe, fully-tested posting
+  *mechanism*; wiring it to a real Telegram confirmation is deferred until the
+  ledger-mapping question above is resolved by the project owner.
+- **Date:** 2026-09-02
+
+### 27. Only Sales vouchers are supported; Purchase is out of scope pending a real sample
+
+- **Decision:** `buildSalesVoucherXml` builds Sales vouchers only. There is no
+  Purchase equivalent yet.
+- **Reason:** Tally's debit/credit sign convention for a voucher (which side is
+  negative vs. positive, and the `ISDEEMEDPOSITIVE` flag on each side) was
+  confirmed against a real Sales voucher captured during Phase 3 discovery.
+  No real Purchase voucher sample exists in this project to confirm its
+  convention against — it is commonly understood to be the mirror image of
+  Sales, but "commonly" is not verified, and getting a debit/credit sign wrong
+  in a real accounting system is exactly the kind of mistake this project's
+  "never guess" rule exists to prevent.
+- **Alternatives considered:** Implementing Purchase by mirroring the Sales
+  sign convention — rejected as an unverified assumption in a place where
+  being wrong has real financial consequences.
+- **Date:** 2026-09-02

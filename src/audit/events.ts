@@ -42,6 +42,7 @@ export const AUDIT_EVENT_TYPES = [
   // Phase 7 — Tally posting
   'tally.request.sent',
   'tally.response.received',
+  'tally.posting.rejected',
 ] as const;
 
 export type AuditEventType = (typeof AUDIT_EVENT_TYPES)[number];

@@ -4,86 +4,96 @@ _Last updated: 2026-09-02_
 
 ## Current phase
 
-Phase 6 — Conversation state, multi-turn slot filling, preview, Confirm/Cancel.
-**Complete.**
+Phase 7 — Tally posting mechanism. **Posting mechanism complete and tested.
+Not yet wired to a real confirmed conversation draft** — blocked on a schema
+decision, reported below, awaiting approval.
 
 ## Current task
 
-None. Awaiting approval to begin Phase 7.
+Awaiting your decision on the reported schema gap (see below) before wiring
+`postConfirmedTransaction` to the Phase 6 confirmation flow.
 
 ## Completed work
 
-**Phases 0–5** — foundation, Telegram webhook with security gates, append-only
-SQLite audit log, Tally master data sync, LLM structured extraction,
-deterministic validation and master matching. See git history for detail.
+**Phases 0–6** — foundation through conversation flow with preview and
+Confirm/Cancel. See git history for detail.
 
-**Phase 6 — Conversation Flow**
+**Phase 7 — Tally Posting Mechanism**
+- `src/tally/postingXml.ts` — `buildSalesVoucherXml` (deterministic, pure) and
+  `parseImportResponse`. The party-ledger sign convention (negative,
+  `ISDEEMEDPOSITIVE=Yes`) and every field name were confirmed against a real
+  Sales voucher captured during Phase 3 discovery, not assumed.
+- `src/tally/posting.ts` — `createTallyPostingClient` (HTTP Import, injectable
+  fetch, never throws — every failure resolves to an outcome), `createPostingStore`
+  (SQLite-backed, atomic duplicate/concurrency protection via a primary-key
+  `INSERT`), and `postConfirmedTransaction` (the orchestrator: confirms the
+  draft is actually `confirmed` in `conversation_drafts`, claims the posting
+  attempt exactly once, posts, records the outcome, audits every step).
+- Migration 5 adds `tally_postings`; migration 6 widens the audit vocabulary
+  for `tally.posting.rejected`.
+- **Phase 3's read-only client (`client.ts`, `xml.ts`, `masters.ts`,
+  `cache.ts`) is untouched** — confirmed by diff. Phase 4 and Phase 5 are also
+  untouched. No new HTTP route or endpoint exists anywhere for posting.
 
-The full pipeline is now wired together and live in the webhook: Telegram
-message → LLM extraction → Phase 5 validation → conversation state → preview →
-explicit Confirm/Cancel. Nothing in this phase calls Tally.
+## ⚠️ Schema gap — reported per your instructions, awaiting your decision
 
-- `src/conversation/store.ts` — `conversation_drafts` table (one row per chat,
-  upserted), with `setStatusIfCurrent`: a single conditional `UPDATE` gated on
-  chat, user, draft version, and expected status all matching. This one
-  mechanism is what makes stale buttons, duplicate taps, and cross-chat
-  callbacks all fail safely (`DECISIONS.md` #21). Expiry (15 min) is checked
-  lazily on read, no scheduler needed.
-- `src/conversation/merge.ts` — deterministic merge of a follow-up extraction
-  into the existing draft; Phase 4's client was deliberately **not** given
-  prior-draft context (`DECISIONS.md` #22).
-- `src/conversation/clarification.ts` — an ambiguous match is resolved from the
-  next reply via Phase 5's own `matchName`, never a second LLM call
-  (`DECISIONS.md` #23).
-- `src/conversation/messages.ts` — pure text builders for every outcome
-  (preview, follow-up ask, clarification, confirmed, cancelled, rejected).
-- `src/conversation/handleMessage.ts` / `handleCallback.ts` — the two
-  orchestrators, wired into `src/channels/telegram/webhook.ts` after the
-  existing, unchanged security gates.
-- `src/channels/telegram/{client,types}.ts` — extended for inline keyboards,
-  `answerCallbackQuery`, and callback-query parsing.
-- `src/db/schema.ts` — migration 3 widens the audit event vocabulary (via
-  SQLite's recreate-table pattern, `DECISIONS.md` #24); migration 4 adds
-  `conversation_drafts`.
-- `src/audit/events.ts` — four new event types now emitted:
-  `draft.created`/`draft.updated`, `preview.shown`, `confirmation.rejected`
-  (plus `user.confirmed`/`user.cancelled`, declared earlier, emitted for the
-  first time here).
+The existing `TransactionDraft` + `DraftValidationResult` do not carry enough
+information to safely build a *correct* real Tally voucher. Building anything
+further here would mean guessing at a live accounting system, which is exactly
+what was ruled out. Specifics:
 
-**Not touched:** `src/llm/` (Phase 4), `src/validation/` (Phase 5), and
-`src/tally/masters.ts`/`client.ts` (Phase 3) — confirmed by diff. No Tally
-write capability, no WhatsApp, no new dependency.
+| Missing | Why it's required | What would need to grow |
+|---|---|---|
+| **Sales ledger name** for each line's accounting allocation (e.g. "Sales", "GST Sales" — the real captured sample used a company-specific name, not a generic one) | Every inventory line in a Tally voucher must credit a specific income ledger; there is no way to infer which one from an item name alone | Either a new config default, or an extension to Phase 3's `StockItem` master fields |
+| **GST ledger names and the CGST+SGST vs. IGST split** | The split depends on whether the transaction is intra-state or inter-state, which depends on the party's registered state vs. the company's — neither is captured anywhere today. The one real sample found (`DECISIONS.md`) used a single "SGST" line with no CGST/IGST counterpart, so even the existing data doesn't reveal a reliable pattern | Party state and company state would need to be captured (Phase 3 `Ledger` fields, and/or config); the tax-ledger-name mapping itself is a business decision, not inferable |
+| **Godown/warehouse** | This specific company has godown tracking enabled (12 godowns synced in Phase 3) and real captured vouchers include a godown allocation per line; omitting it risks Tally rejecting the voucher outright | `TransactionDraft`/validation would need a godown field, or a fixed default godown decision |
+
+**Not blocking** (handled inside Phase 7 without touching the schema):
+unit of measure (read from the already-cached `StockItem.BASEUNITS`), voucher
+date (defaults to posting time), voucher number (omitted — Tally auto-numbers).
+
+**Also flagged, not blocking:** Purchase vouchers are out of scope for now —
+no real captured Purchase sample exists to confirm its sign convention against
+(`DECISIONS.md` #27). Only Sales is implemented.
+
+**What I built instead of guessing:** `postConfirmedTransaction` takes a fully
+resolved `SalesVoucherInput` — the caller supplies the sales/tax ledger
+allocations explicitly. The entire posting mechanism (XML building, HTTP
+Import, response parsing, duplicate/concurrency protection, state, audit) is
+complete and tested against that contract. What remains is deciding how the
+missing fields above get sourced, then writing the (small) piece of code that
+turns a confirmed `TransactionDraft` into a `SalesVoucherInput` and calls
+`postConfirmedTransaction` — deliberately not done yet.
 
 ## Work in progress
 
-None.
+None — waiting on your decision above before proceeding.
 
 ## Next task
 
-Phase 7 — Idempotent Sales Invoice posting to Tally: a confirmed draft
-(`status = 'confirmed'` in `conversation_drafts`) is posted via the Phase 3
-Tally client's write path (not yet built — Phase 3 is export-only today), with
-an idempotency key so a retry cannot double-post.
+Once the ledger-mapping question is resolved: write the adapter from a
+confirmed `TransactionDraft` to `SalesVoucherInput`, wire it into
+`handleCallbackQuery`'s confirm path, and — only after that, and only with
+explicit approval — send the first real Tally Import request.
 
 ## Known issues / blockers
 
+- **Blocking:** the schema gap above.
 - No GitHub remote and `gh` CLI is not installed — local commits only.
 - No rate limiting yet (Phase 8).
-- Multi-turn continuation via a bare correction (e.g. "actually make that 200"
-  with no other context) has not been verified against the real Anthropic API —
-  this phase's tests use a scripted fake LLM throughout, by design. Recorded as
-  a limitation, not hidden (`DECISIONS.md` #22).
-- Ambiguous-candidate replies are matched with Phase 5's existing fuzzy
-  threshold; a reply that doesn't clearly pick one falls through to a fresh LLM
-  extraction of that same message.
-- `conversation_drafts` holds only the single most recent draft per chat; there
-  is no history of earlier, superseded drafts beyond what the audit log
-  captured about them.
+- Purchase vouchers unimplemented (`DECISIONS.md` #27).
+- `parseImportResponse`'s response format is the standard, documented Tally
+  Import shape (`<RESPONSE><CREATED>/<ERRORS>/<LINEERROR>`) but has **not**
+  been confirmed against this specific TallyPrime instance — no real Import
+  request has been sent. This is exactly what the first approved, controlled
+  real Tally test is for.
 
 ## Last important technical decision
 
-Confirm/Cancel safety is one mechanism, not several: a `draft_version_id`
-embedded in each button's callback data, checked via a single conditional SQL
-`UPDATE` against the chat, user, version, and expected status all at once.
-Stale buttons, duplicate taps, expired drafts, and cross-chat forgeries all
-fail through the same code path with no special-casing. `DECISIONS.md` #21.
+Duplicate and concurrent posting protection is a single primary-key `INSERT`
+on `tally_postings.draft_version_id` — whichever caller's insert wins proceeds,
+every other caller (duplicate callback, concurrent request, blind retry) gets
+the existing row back. Once a row exists at all, no second attempt is ever
+made for that draft version, even if it ended in `failed` or `uncertain` —
+because a local failure does not prove Tally never processed the request, and
+automatic retry risks a real duplicate voucher. `DECISIONS.md` #25.

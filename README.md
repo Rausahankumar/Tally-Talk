@@ -13,14 +13,16 @@ causes a write on its own.
 
 ## Status
 
-Phase 6 complete. A Telegram message now flows end to end: the webhook (secret
-token + allowlist checks unchanged) hands the text to the Anthropic-backed LLM
-module for structured extraction, validates the result against the cached
-TallyPrime master data, tracks the draft per chat across follow-up messages
-(filling in missing fields, resolving ambiguous ledger/item matches from a
-plain reply), and — once everything checks out — sends a preview with explicit
-Confirm/Cancel buttons. Confirming only marks the draft as approved; **nothing
-is sent to Tally yet**. A separate, manual command syncs and caches TallyPrime
+Phase 6 (Telegram → extraction → validation → preview → Confirm/Cancel) is
+complete and wired end to end. Phase 7 adds a fully built and tested Tally
+**posting mechanism** (`src/tally/posting.ts`) — deterministic voucher XML,
+HTTP Import, response parsing, exactly-once duplicate/concurrency protection —
+but it is **not yet wired to a real confirmed draft**: the existing extraction
+and validation data model doesn't yet carry the sales/GST ledger and godown
+information a real voucher needs, and this project does not guess at what
+posts to a real accounting system. See `PROJECT_STATUS.md` for the exact gap
+and what's needed to close it. **No transaction has ever been posted to Tally
+by this project.** A separate, manual command syncs and caches TallyPrime
 master data read-only. See `PROJECT_STATUS.md`.
 
 ## Requirements

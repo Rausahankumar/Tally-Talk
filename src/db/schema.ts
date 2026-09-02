@@ -14,6 +14,7 @@ import type { Logger } from '../logger.ts';
 export const AUDIT_EVENTS_TABLE = 'audit_events';
 export const TALLY_MASTERS_TABLE = 'tally_masters';
 export const CONVERSATION_DRAFTS_TABLE = 'conversation_drafts';
+export const TALLY_POSTINGS_TABLE = 'tally_postings';
 
 /** Render a string list as a SQL `IN (...)` value list. */
 function sqlList(values: readonly string[]): string {
@@ -177,8 +178,94 @@ CREATE TABLE ${CONVERSATION_DRAFTS_TABLE} (
 );
 `;
 
+/**
+ * Migration 5 — Tally posting attempts.
+ *
+ * `draft_version_id` is the primary key, not just an indexed column: it is
+ * what makes "post this confirmed draft" safe to call more than once. The
+ * first call's `INSERT` succeeds and proceeds to actually contact Tally; any
+ * other call for the same draft version — a duplicate confirmation callback,
+ * a concurrent request, a retry after the caller didn't see the first
+ * response — fails the `INSERT` on the primary key, atomically, before it
+ * gets anywhere near Tally. There is deliberately no retry path once a row
+ * exists here, even for `failed` or `uncertain`: a second attempt cannot tell
+ * whether the first one actually reached Tally, so investigating a stuck
+ * row is a manual decision, not an automatic one (DECISIONS.md #25).
+ */
+const MIGRATION_5 = `
+CREATE TABLE ${TALLY_POSTINGS_TABLE} (
+  draft_version_id  TEXT PRIMARY KEY,
+  status            TEXT NOT NULL CHECK (status IN ('posting', 'posted', 'failed', 'uncertain')),
+  request_xml       TEXT NOT NULL,
+  response_raw      TEXT,
+  tally_voucher_id  TEXT,
+  message           TEXT,
+  created_at        TEXT NOT NULL,
+  completed_at      TEXT
+);
+`;
+
+/**
+ * Migration 6 — widen `audit_events.type` again, this time for
+ * `tally.posting.rejected` (a posting attempt refused before ever contacting
+ * Tally: the draft was not confirmed, or a posting attempt already exists for
+ * it). Same recreate-table technique as migration 3, for the same reason
+ * (DECISIONS.md #24) — SQLite cannot alter a CHECK constraint in place.
+ */
+const MIGRATION_6 = `
+DROP TRIGGER ${AUDIT_EVENTS_TABLE}_no_update;
+DROP TRIGGER ${AUDIT_EVENTS_TABLE}_no_delete;
+ALTER TABLE ${AUDIT_EVENTS_TABLE} RENAME TO ${AUDIT_EVENTS_TABLE}_v2;
+
+CREATE TABLE ${AUDIT_EVENTS_TABLE} (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  schema_version   INTEGER NOT NULL,
+  correlation_id   TEXT    NOT NULL,
+  occurred_at      TEXT    NOT NULL,
+  type             TEXT    NOT NULL CHECK (type IN (${sqlList(AUDIT_EVENT_TYPES)})),
+  channel          TEXT    NOT NULL CHECK (channel IN (${sqlList(AUDIT_CHANNELS)})),
+  actor_kind       TEXT    NOT NULL CHECK (actor_kind IN (${sqlList(AUDIT_ACTOR_KINDS)})),
+  telegram_user_id INTEGER,
+  chat_id          INTEGER,
+  data             TEXT    NOT NULL CHECK (json_valid(data))
+);
+
+INSERT INTO ${AUDIT_EVENTS_TABLE}
+  SELECT * FROM ${AUDIT_EVENTS_TABLE}_v2;
+
+DROP TABLE ${AUDIT_EVENTS_TABLE}_v2;
+
+CREATE INDEX idx_audit_events_correlation
+  ON ${AUDIT_EVENTS_TABLE} (correlation_id, occurred_at);
+
+CREATE INDEX idx_audit_events_occurred_at
+  ON ${AUDIT_EVENTS_TABLE} (occurred_at DESC);
+
+CREATE INDEX idx_audit_events_user
+  ON ${AUDIT_EVENTS_TABLE} (telegram_user_id, occurred_at DESC);
+
+CREATE TRIGGER ${AUDIT_EVENTS_TABLE}_no_update
+BEFORE UPDATE ON ${AUDIT_EVENTS_TABLE}
+BEGIN
+  SELECT RAISE(ABORT, 'audit_events is append-only: updates are not permitted');
+END;
+
+CREATE TRIGGER ${AUDIT_EVENTS_TABLE}_no_delete
+BEFORE DELETE ON ${AUDIT_EVENTS_TABLE}
+BEGIN
+  SELECT RAISE(ABORT, 'audit_events is append-only: deletes are not permitted');
+END;
+`;
+
 /** Ordered migrations. Append to this list; never edit an applied entry. */
-const MIGRATIONS: readonly string[] = [MIGRATION_1, MIGRATION_2, MIGRATION_3, MIGRATION_4];
+const MIGRATIONS: readonly string[] = [
+  MIGRATION_1,
+  MIGRATION_2,
+  MIGRATION_3,
+  MIGRATION_4,
+  MIGRATION_5,
+  MIGRATION_6,
+];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.length;
 
