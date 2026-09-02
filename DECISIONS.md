@@ -242,3 +242,57 @@ Important decisions only. Newest last.
   casting it to `TransactionDraft` — rejected outright; it is exactly the
   "backend blindly trusts the AI" failure mode `CLAUDE.md` rules out.
 - **Date:** 2026-09-02
+
+### 18. Combined edit-distance and partial-substring scoring for master matching
+
+- **Decision:** `matchName` scores a candidate as `max(wholeStringSimilarity,
+  bestSubstringWindowSimilarity)`, not plain Levenshtein similarity alone.
+- **Reason:** Real Tally master names are frequently long and compound (e.g.
+  "ACC Cement OPC 43 Grade"), while an LLM extracts short, plain names from a
+  user's message (e.g. "cement"). Measured directly: whole-string similarity
+  between those two strings is 0.26 — far below any usable threshold — despite
+  "cement" being an exact substring. Sliding a same-length window across the
+  longer name and taking the best exact-edit-distance score against that window
+  fixes this while remaining fully deterministic (still edit distance, just
+  against the best-aligned slice).
+- **Alternatives considered:** Plain whole-string similarity — verified
+  unusable for this project's actual data shape before being rejected, not
+  assumed; a token-overlap/Jaccard scorer — workable, but a second, differently
+  parameterised algorithm to reason about for one gain that the window approach
+  already provides.
+- **Date:** 2026-09-02
+
+### 19. GST rate is checked against a fixed slab list, not per-item master data
+
+- **Decision:** `isValidGstPercent` checks a stated rate against a fixed list of
+  documented Indian GST slabs (0, 0.25, 1.5, 3, 5, 6, 7.5, 12, 18, 28), not
+  against a per-stock-item or per-HSN rate looked up from Tally.
+- **Reason:** The Phase 3 master cache does not carry GST/HSN fields (its
+  `StockItem` field list is `NAME, PARENT, BASEUNITS` — see `src/tally/masters.ts`).
+  Adding those fields is real scope, not a Phase 5 validation concern, so this
+  phase validates plausibility of the stated number rather than correctness
+  against a specific item's actual configured rate.
+- **Limitation this creates:** a user-stated GST rate that is a real slab but
+  wrong *for that specific item* (e.g. 18% stated for an item actually taxed at
+  5%) passes this check. Catching that requires Phase 3's `StockItem` fields to
+  be extended with GST/HSN data — explicitly out of Phase 5's scope, not
+  overlooked.
+- **Alternatives considered:** Fetching GST fields as part of this phase —
+  rejected as scope creep into Phase 3's territory; skipping GST validation
+  entirely — rejected, since a plausibility check is cheap and catches real
+  extraction errors (e.g. "80% GST").
+- **Date:** 2026-09-02
+
+### 20. Voucher type validation checks the underlying Tally master, not just the enum
+
+- **Decision:** Beyond rejecting `voucherType: 'unknown'`, a `sales` or
+  `purchase` draft is checked against the Phase 3 `VoucherType` master cache
+  for an exact-match "Sales" or "Purchase" record. Exact match only — no fuzzy
+  matching for voucher types.
+- **Reason:** A company can rename or delete Tally's default voucher types.
+  Checking the enum alone would let a draft through that references a voucher
+  type this specific company does not actually have configured. Fuzzy matching
+  is deliberately excluded here: voucher type names are Tally configuration,
+  not user-typed free text, so a close-but-wrong fuzzy match would be a real
+  misconfiguration risk with no corresponding benefit.
+- **Date:** 2026-09-02
