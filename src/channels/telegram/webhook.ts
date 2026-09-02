@@ -1,8 +1,8 @@
 /**
  * Telegram webhook route.
  *
- * Enforces the two Phase 1 security gates, in order, before anything else
- * happens with a request:
+ * Enforces the two security gates, in order, before anything else happens with
+ * a request:
  *
  *   1. The request carries the exact `X-Telegram-Bot-Api-Secret-Token` value
  *      configured for this deployment — otherwise it did not come from
@@ -10,14 +10,18 @@
  *   2. The sending Telegram user is on the allowlist — otherwise the update is
  *      acknowledged and dropped without any further processing.
  *
- * Later phases add LLM extraction, validation and Tally posting *after* these
- * gates; nothing may be inserted before them.
+ * Every inbound message and every authorization outcome is appended to the
+ * audit log under one `correlationId`, so a whole user turn can be replayed
+ * later. Later phases add LLM extraction, validation and Tally posting *after*
+ * these gates, appending to the same correlation id; nothing may be inserted
+ * before them.
  */
 
-import { timingSafeEqual } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { Router } from 'express';
 import type { Request, Response } from 'express';
 
+import type { AuditLog } from '../../audit/log.ts';
 import type { Logger } from '../../logger.ts';
 import type { TelegramClient } from './client.ts';
 import { parseIncomingMessage } from './types.ts';
@@ -28,6 +32,7 @@ export interface TelegramWebhookDeps {
   readonly webhookSecret: string;
   readonly allowedUserIds: ReadonlySet<number>;
   readonly telegram: TelegramClient;
+  readonly auditLog: AuditLog;
   readonly logger: Logger;
 }
 
@@ -46,11 +51,21 @@ export function createTelegramWebhookRouter(deps: TelegramWebhookDeps): Router {
   const router = Router();
 
   router.post('/', async (req: Request, res: Response): Promise<void> => {
+    // Minted per inbound update and carried by every event of this turn.
+    const correlationId = randomUUID();
     const provided = req.get(SECRET_TOKEN_HEADER);
 
     if (provided === undefined || !secretMatches(provided, deps.webhookSecret)) {
       deps.logger.warn('Rejected webhook request with missing or invalid secret token', {
         hasHeader: provided !== undefined,
+      });
+      deps.auditLog.record({
+        correlationId,
+        type: 'webhook.rejected',
+        channel: 'system',
+        actor: { kind: 'system' },
+        // Nothing in the body is trustworthy here, so none of it is recorded.
+        data: { reason: provided === undefined ? 'missing_secret_token' : 'invalid_secret_token' },
       });
       // Deliberately unspecific: do not tell an unauthenticated caller which
       // part was wrong, or whether this endpoint expects a secret at all.
@@ -61,23 +76,50 @@ export function createTelegramWebhookRouter(deps: TelegramWebhookDeps): Router {
     const message = parseIncomingMessage(req.body);
     if (message === null) {
       // Not something this phase handles (edited message, callback query,
-      // non-text media). Acknowledge so Telegram does not retry it.
+      // non-text media). Acknowledge so Telegram does not retry it. Nothing is
+      // audited: there is no message and no identified actor to record.
       deps.logger.info('Ignoring update with no handleable text message');
       res.status(200).json({ ok: true });
       return;
     }
 
+    const actor = { kind: 'user' as const, telegramUserId: message.userId, chatId: message.chatId };
+
+    deps.auditLog.record({
+      correlationId,
+      type: 'message.received',
+      channel: 'telegram',
+      actor,
+      // The raw message is the first line of the audit trail: "what did the
+      // user actually say?" It stays on-premises with the rest of the log.
+      data: { text: message.text },
+    });
+
     if (!deps.allowedUserIds.has(message.userId)) {
       // Silent drop: replying would confirm to an unauthorized prober that a
-      // live bot sits behind this endpoint. Still acknowledged, and logged so
+      // live bot sits behind this endpoint. Still acknowledged, and recorded so
       // an operator can see the attempt and add the user if it was genuine.
       deps.logger.warn('Rejected message from user not on allowlist', { userId: message.userId });
+      deps.auditLog.record({
+        correlationId,
+        type: 'authorization.denied',
+        channel: 'telegram',
+        actor,
+        data: { reason: 'user_not_on_allowlist' },
+      });
       res.status(200).json({ ok: true });
       return;
     }
 
-    // Phase 1 stops here: echo the text back. Extraction, validation, preview,
-    // confirmation and Tally posting arrive in later phases.
+    deps.auditLog.record({
+      correlationId,
+      type: 'authorization.granted',
+      channel: 'telegram',
+      actor,
+    });
+
+    // Phase 1 behaviour, unchanged: echo the text back. Extraction, validation,
+    // preview, confirmation and Tally posting arrive in later phases.
     await deps.telegram.sendMessage(message.chatId, `TallyTalk received: ${message.text}`);
 
     deps.logger.info('Echoed message back to authorized user', { userId: message.userId });

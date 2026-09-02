@@ -70,6 +70,34 @@ Debit Note vouchers, voucher edit/cancel, reporting and analytics,
 embeddings-based matching, multi-user RBAC, horizontal scaling, admin dashboard,
 any gateway/OpenClaw-style abstraction.
 
+## Audit event model
+
+One append-only `audit_events` table. Every event shares one envelope, so a
+whole user turn can be replayed by querying a single `correlation_id`:
+
+```
+id | schema_version | correlation_id | occurred_at | type | channel
+   | actor_kind | telegram_user_id | chat_id | data (JSON)
+```
+
+`correlation_id` is minted once per inbound update and carried through every
+downstream step of that turn. `data` is a JSON column holding the only
+type-specific part, which is what lets later phases record richer payloads
+without a schema change.
+
+Event vocabulary — the table accepts all of these from the start, but each type
+is only emitted by the phase that owns it:
+
+| Type | Emitted by |
+|---|---|
+| `webhook.rejected` | Phase 2 |
+| `message.received` | Phase 2 |
+| `authorization.granted` / `authorization.denied` | Phase 2 |
+| `llm.extraction.completed` | Phase 4 |
+| `validation.completed` | Phase 5 |
+| `user.confirmed` / `user.cancelled` | Phase 7 |
+| `tally.request.sent` / `tally.response.received` | Phase 7 |
+
 ## Security requirements
 
 - Tally XML/HTTP reachable on localhost/LAN only, never internet-exposed
@@ -77,7 +105,10 @@ any gateway/OpenClaw-style abstraction.
 - Allowlist check before any LLM call or Tally write
 - Backend re-validates everything independently of LLM output (prompt injection)
 - Secrets in `.env` only; `.env.example` documents required keys
-- Append-only audit log
+- Append-only audit log, enforced by database triggers that abort any update or
+  delete — not by application convention alone
+- The SQLite file lives inside the on-premises perimeter; back it up with the
+  same routine that covers the Tally data directory
 - Per-user rate limiting on messages and LLM calls
 - Data minimisation: never send full master data or chat history to the LLM
 
@@ -94,8 +125,8 @@ small/cheap model behind a swappable interface; prompt caching where supported.
 |---|---|---|
 | 0 | Foundation: docs, git, TypeScript + Vitest toolchain | ✅ Complete |
 | 1 | Telegram webhook slice: secret verification, allowlist, echo reply | ✅ Complete |
-| 2 | SQLite setup and append-only audit log | Next |
-| 3 | Tally XML client + master data sync and cache | Planned |
+| 2 | SQLite setup and append-only audit log | ✅ Complete |
+| 3 | Tally XML client + master data sync and cache | Next |
 | 4 | LLM module: structured extraction schema and single-call extraction | Planned |
 | 5 | Validation + fuzzy matching + GST calculation | Planned |
 | 6 | Conversation state and multi-turn slot filling | Planned |

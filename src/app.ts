@@ -8,6 +8,7 @@
 import express from 'express';
 import type { Express, NextFunction, Request, Response } from 'express';
 
+import type { AuditLog } from './audit/log.ts';
 import type { Config } from './config/index.ts';
 import type { Logger } from './logger.ts';
 import { consoleLogger } from './logger.ts';
@@ -22,6 +23,7 @@ const MAX_BODY_SIZE = '64kb';
 export interface AppDeps {
   readonly config: Config;
   readonly telegram: TelegramClient;
+  readonly auditLog: AuditLog;
   readonly logger?: Logger;
 }
 
@@ -42,6 +44,7 @@ export function createApp(deps: AppDeps): Express {
       webhookSecret: deps.config.telegram.webhookSecret,
       allowedUserIds: deps.config.telegram.allowedUserIds,
       telegram: deps.telegram,
+      auditLog: deps.auditLog,
       logger,
     }),
   );

@@ -100,6 +100,22 @@ describe('loadConfig', () => {
     expect([...config.telegram.allowedUserIds]).toEqual([111, 222, 333]);
   });
 
+  it('defaults the database path', () => {
+    expect(loadConfig(validEnv()).databasePath).toBe('./data/tallytalk.sqlite');
+  });
+
+  it('accepts an explicit database path', () => {
+    expect(loadConfig(validEnv({ DATABASE_PATH: 'D:/data/audit.sqlite' })).databasePath).toBe(
+      'D:/data/audit.sqlite',
+    );
+  });
+
+  it('rejects a database path that names a directory', () => {
+    expect(problemsFrom(validEnv({ DATABASE_PATH: './data/' })).join('\n')).toContain(
+      'must be a file path',
+    );
+  });
+
   it('rejects an out-of-range port', () => {
     expect(problemsFrom(validEnv({ PORT: '70000' })).join('\n')).toContain('between 1 and 65535');
     expect(problemsFrom(validEnv({ PORT: 'abc' })).join('\n')).toContain('between 1 and 65535');

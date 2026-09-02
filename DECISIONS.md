@@ -108,3 +108,52 @@ Important decisions only. Newest last.
   legitimate users but leaks the bot's existence and purpose; returning a non-2xx
   status — would make Telegram retry the same rejected update repeatedly.
 - **Date:** 2026-09-02
+
+### 10. SQLite retained for the audit log; MongoDB evaluated and rejected
+
+- **Decision:** The append-only audit log stays on SQLite, as in the approved
+  foundation plan. A switch to MongoDB was proposed, implemented far enough to
+  evaluate, and then reverted.
+- **Reason:** The deciding factor is the deployment model. This runs on-premises
+  on the same Windows machine as TallyPrime, maintained by whoever maintains
+  Tally — not by an ops team. SQLite is a file: nothing to install, no service to
+  keep running, no port to leave unauthenticated on the LAN, and a backup is a
+  file copy. MongoDB would have added a second server process to install,
+  secure, monitor and back up, for a single-tenant workload of a few events per
+  transaction.
+- **Alternatives considered:** MongoDB — a document store fits heterogeneous
+  event payloads naturally and the tooling was already on the development
+  machine. Rejected because a JSON column in SQLite covers the same
+  heterogeneity, and the operational cost outweighed the modelling convenience
+  at this scale. Revisit if the deployment ever becomes multi-tenant or moves
+  off a single box.
+- **Date:** 2026-09-02
+
+### 11. Use Node's built-in `node:sqlite` rather than a native SQLite package
+
+- **Decision:** Persistence uses the `node:sqlite` module built into Node 24. No
+  SQLite package is added to `package.json`.
+- **Reason:** `better-sqlite3` and friends are native addons requiring a C++
+  toolchain, or a matching prebuilt binary, on the target machine — a real
+  burden on a Windows box that is meant to just run the thing. The built-in
+  module needs neither, which keeps the no-build-step property from decision #8.
+- **Alternatives considered:** `better-sqlite3` — faster and more featureful,
+  but the compile/prebuild dependency is exactly the deployment friction SQLite
+  was chosen to avoid; `node:sqlite` is still marked experimental, which is the
+  accepted trade-off.
+- **Date:** 2026-09-02
+
+### 12. Append-only is enforced by the database, not by convention
+
+- **Decision:** `BEFORE UPDATE` and `BEFORE DELETE` triggers on `audit_events`
+  raise `ABORT`, so no connection can rewrite or remove an event — including the
+  application's own. The `AuditLog` interface additionally exposes no update or
+  delete method.
+- **Reason:** An audit trail that the application could quietly edit is not
+  evidence of anything. The triggers make immutability a property of the file
+  itself, so it survives future code that has forgotten the rule.
+- **Alternatives considered:** Relying on code review and a narrow interface
+  alone — leaves history editable by anything holding the connection; a
+  hash-chain over rows — meaningful tamper *detection*, but unnecessary
+  complexity for an MVP whose file is already inside the trusted perimeter.
+- **Date:** 2026-09-02

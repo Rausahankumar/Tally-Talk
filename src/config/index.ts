@@ -19,6 +19,8 @@ export interface Config {
   readonly port: number;
   readonly nodeEnv: string;
   readonly telegram: TelegramConfig;
+  /** Path to the SQLite file backing the audit log. */
+  readonly databasePath: string;
 }
 
 /** Raised when one or more environment values are missing or malformed. */
@@ -106,6 +108,18 @@ function parseAllowedUserIds(env: NodeJS.ProcessEnv, problems: string[]): Readon
   return ids;
 }
 
+const DEFAULT_DATABASE_PATH = './data/tallytalk.sqlite';
+
+function parseDatabasePath(env: NodeJS.ProcessEnv, problems: string[]): string {
+  const raw = env.DATABASE_PATH?.trim();
+  if (!raw) return DEFAULT_DATABASE_PATH;
+
+  if (raw.endsWith('/') || raw.endsWith('\\')) {
+    problems.push(`DATABASE_PATH must be a file path, not a directory (got "${raw}")`);
+  }
+  return raw;
+}
+
 function parsePort(env: NodeJS.ProcessEnv, problems: string[]): number {
   const raw = env.PORT?.trim();
   if (!raw) return 3000;
@@ -134,6 +148,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       webhookSecret: parseWebhookSecret(env, problems),
       allowedUserIds: parseAllowedUserIds(env, problems),
     },
+    databasePath: parseDatabasePath(env, problems),
   };
 
   if (problems.length > 0) throw new ConfigError(problems);

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import request from 'supertest';
 
 import { TELEGRAM_WEBHOOK_PATH, createApp } from '../src/app.ts';
@@ -6,6 +6,10 @@ import type { Config } from '../src/config/index.ts';
 import { SECRET_TOKEN_HEADER } from '../src/channels/telegram/webhook.ts';
 import type { TelegramClient } from '../src/channels/telegram/client.ts';
 import { silentLogger } from '../src/logger.ts';
+import { createAuditLog } from '../src/audit/log.ts';
+import type { AuditLog } from '../src/audit/log.ts';
+import type { Database } from '../src/db/sqlite.ts';
+import { createTestDatabase } from './helpers/testDatabase.ts';
 
 const WEBHOOK_SECRET = 'correct-webhook-secret';
 const AUTHORIZED_USER_ID = 111;
@@ -36,6 +40,7 @@ const config: Config = {
     webhookSecret: WEBHOOK_SECRET,
     allowedUserIds: new Set([AUTHORIZED_USER_ID]),
   },
+  databasePath: ':memory:',
 };
 
 function messageUpdate(userId: number, text: string): object {
@@ -51,12 +56,34 @@ function messageUpdate(userId: number, text: string): object {
 }
 
 let telegram: ReturnType<typeof createFakeTelegramClient>;
+let database: Database;
+let auditLog: AuditLog;
 let app: ReturnType<typeof createApp>;
 
 beforeEach(() => {
   telegram = createFakeTelegramClient();
-  app = createApp({ config, telegram, logger: silentLogger });
+  database = createTestDatabase();
+  auditLog = createAuditLog({ db: database.db, logger: silentLogger });
+  app = createApp({ config, telegram, auditLog, logger: silentLogger });
 });
+
+afterEach(() => {
+  database.close();
+});
+
+/** Every event recorded so far, oldest first. */
+function recordedEvents() {
+  return database.db
+    .prepare('SELECT type, correlation_id, telegram_user_id, chat_id, actor_kind, data FROM audit_events ORDER BY id')
+    .all() as unknown as {
+    type: string;
+    correlation_id: string;
+    telegram_user_id: number | null;
+    chat_id: number | null;
+    actor_kind: string;
+    data: string;
+  }[];
+}
 
 describe('secret token verification', () => {
   it('rejects a request with no secret token header', async () => {
@@ -160,6 +187,91 @@ describe('update parsing', () => {
     expect(response.status).toBe(200);
     expect(response.body).toEqual({ ok: true });
     expect(telegram.sent).toHaveLength(0);
+  });
+});
+
+describe('audit trail', () => {
+  it('records a rejected webhook without trusting anything in the body', async () => {
+    await request(app)
+      .post(TELEGRAM_WEBHOOK_PATH)
+      .set(SECRET_TOKEN_HEADER, 'wrong-webhook-secret')
+      .send(messageUpdate(AUTHORIZED_USER_ID, 'sell 100 bags'));
+
+    const events = recordedEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0]?.type).toBe('webhook.rejected');
+    expect(events[0]?.actor_kind).toBe('system');
+    expect(events[0]?.telegram_user_id).toBeNull();
+    expect(JSON.parse(events[0]?.data ?? '{}')).toEqual({ reason: 'invalid_secret_token' });
+    // The unauthenticated caller's claimed user id and text must not be stored.
+    expect(JSON.stringify(events[0])).not.toContain('sell 100 bags');
+    expect(JSON.stringify(events[0])).not.toContain(String(AUTHORIZED_USER_ID));
+  });
+
+  it('distinguishes a missing secret token from a wrong one', async () => {
+    await request(app).post(TELEGRAM_WEBHOOK_PATH).send(messageUpdate(AUTHORIZED_USER_ID, 'hi'));
+
+    expect(JSON.parse(recordedEvents()[0]?.data ?? '{}')).toEqual({
+      reason: 'missing_secret_token',
+    });
+  });
+
+  it('records the message and the denial for an unauthorized user', async () => {
+    await request(app)
+      .post(TELEGRAM_WEBHOOK_PATH)
+      .set(SECRET_TOKEN_HEADER, WEBHOOK_SECRET)
+      .send(messageUpdate(UNAUTHORIZED_USER_ID, 'sell 100 bags to Ramesh'));
+
+    const events = recordedEvents();
+    expect(events.map((e) => e.type)).toEqual(['message.received', 'authorization.denied']);
+    expect(JSON.parse(events[0]?.data ?? '{}')).toEqual({ text: 'sell 100 bags to Ramesh' });
+    expect(JSON.parse(events[1]?.data ?? '{}')).toEqual({ reason: 'user_not_on_allowlist' });
+    expect(events[1]?.telegram_user_id).toBe(UNAUTHORIZED_USER_ID);
+  });
+
+  it('records the message and the grant for an authorized user', async () => {
+    await request(app)
+      .post(TELEGRAM_WEBHOOK_PATH)
+      .set(SECRET_TOKEN_HEADER, WEBHOOK_SECRET)
+      .send(messageUpdate(AUTHORIZED_USER_ID, 'sell 100 bags to Ramesh'));
+
+    const events = recordedEvents();
+    expect(events.map((e) => e.type)).toEqual(['message.received', 'authorization.granted']);
+    expect(events[0]?.telegram_user_id).toBe(AUTHORIZED_USER_ID);
+    expect(events[0]?.chat_id).toBe(CHAT_ID);
+  });
+
+  it('ties every event of one turn to a single correlation id', async () => {
+    await request(app)
+      .post(TELEGRAM_WEBHOOK_PATH)
+      .set(SECRET_TOKEN_HEADER, WEBHOOK_SECRET)
+      .send(messageUpdate(AUTHORIZED_USER_ID, 'hello'));
+
+    const correlationIds = new Set(recordedEvents().map((e) => e.correlation_id));
+    expect(correlationIds.size).toBe(1);
+
+    const [correlationId] = [...correlationIds];
+    expect(auditLog.findByCorrelationId(correlationId as string)).toHaveLength(2);
+  });
+
+  it('gives separate turns separate correlation ids', async () => {
+    for (const text of ['first', 'second']) {
+      await request(app)
+        .post(TELEGRAM_WEBHOOK_PATH)
+        .set(SECRET_TOKEN_HEADER, WEBHOOK_SECRET)
+        .send(messageUpdate(AUTHORIZED_USER_ID, text));
+    }
+
+    expect(new Set(recordedEvents().map((e) => e.correlation_id)).size).toBe(2);
+  });
+
+  it('does not record updates it cannot handle', async () => {
+    await request(app)
+      .post(TELEGRAM_WEBHOOK_PATH)
+      .set(SECRET_TOKEN_HEADER, WEBHOOK_SECRET)
+      .send({ update_id: 1 });
+
+    expect(recordedEvents()).toHaveLength(0);
   });
 });
 

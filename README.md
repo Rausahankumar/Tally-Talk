@@ -13,9 +13,11 @@ causes a write on its own.
 
 ## Status
 
-Phase 1 complete. The Express server accepts Telegram webhook updates, verifies
-the secret token, checks the sender against the allowlist and echoes the message
-back. No LLM, Tally or conversation logic yet. See `PROJECT_STATUS.md`.
+Phase 2 complete. The Express server accepts Telegram webhook updates, verifies
+the secret token, checks the sender against the allowlist, appends every inbound
+message and authorization outcome to an append-only SQLite audit log, and echoes
+the message back. No LLM, Tally or conversation logic yet. See
+`PROJECT_STATUS.md`.
 
 ## Requirements
 
@@ -61,6 +63,11 @@ curl -X POST "https://api.telegram.org/bot<TOKEN>/setWebhook" -d "url=https://<h
 The backend is designed to run **on-premises, on the same LAN as TallyPrime**.
 Tally's XML/HTTP interface has no authentication and must never be exposed to
 the internet.
+
+The audit log is a single SQLite file at `DATABASE_PATH` (its directory is
+created on first run). It is append-only — database triggers reject any update
+or delete — so back it up with the same routine that covers the Tally data
+directory, and never try to prune it in place.
 
 ## Documentation
 
