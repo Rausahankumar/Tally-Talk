@@ -10,6 +10,7 @@ function validEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     TELEGRAM_BOT_TOKEN: VALID_TOKEN,
     TELEGRAM_WEBHOOK_SECRET: VALID_SECRET,
     TELEGRAM_ALLOWED_USER_IDS: '111,222',
+    TALLY_COMPANY_NAME: 'Nirmal FMCG Traders Ltd',
     ...overrides,
   };
 }
@@ -45,10 +46,11 @@ describe('loadConfig', () => {
   it('reports every missing required key at once', () => {
     const problems = problemsFrom({});
 
-    expect(problems).toHaveLength(3);
+    expect(problems).toHaveLength(4);
     expect(problems.join('\n')).toContain('TELEGRAM_BOT_TOKEN');
     expect(problems.join('\n')).toContain('TELEGRAM_WEBHOOK_SECRET');
     expect(problems.join('\n')).toContain('TELEGRAM_ALLOWED_USER_IDS');
+    expect(problems.join('\n')).toContain('TALLY_COMPANY_NAME');
   });
 
   it('treats whitespace-only values as missing', () => {
@@ -119,5 +121,32 @@ describe('loadConfig', () => {
   it('rejects an out-of-range port', () => {
     expect(problemsFrom(validEnv({ PORT: '70000' })).join('\n')).toContain('between 1 and 65535');
     expect(problemsFrom(validEnv({ PORT: 'abc' })).join('\n')).toContain('between 1 and 65535');
+  });
+
+  it('defaults the Tally host and port', () => {
+    const config = loadConfig(validEnv());
+
+    expect(config.tally.host).toBe('127.0.0.1');
+    expect(config.tally.port).toBe(9000);
+  });
+
+  it('reads an explicit Tally host, port and company name', () => {
+    const config = loadConfig(
+      validEnv({ TALLY_HOST: '10.0.0.5', TALLY_PORT: '9999', TALLY_COMPANY_NAME: 'Acme Ltd' }),
+    );
+
+    expect(config.tally.host).toBe('10.0.0.5');
+    expect(config.tally.port).toBe(9999);
+    expect(config.tally.companyName).toBe('Acme Ltd');
+  });
+
+  it('requires a company name', () => {
+    expect(problemsFrom(validEnv({ TALLY_COMPANY_NAME: '' })).join('\n')).toContain(
+      'TALLY_COMPANY_NAME is required',
+    );
+  });
+
+  it('rejects an out-of-range Tally port', () => {
+    expect(problemsFrom(validEnv({ TALLY_PORT: '99999' })).join('\n')).toContain('TALLY_PORT');
   });
 });

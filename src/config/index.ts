@@ -15,12 +15,19 @@ export interface TelegramConfig {
   readonly allowedUserIds: ReadonlySet<number>;
 }
 
+export interface TallyConfig {
+  readonly host: string;
+  readonly port: number;
+  readonly companyName: string;
+}
+
 export interface Config {
   readonly port: number;
   readonly nodeEnv: string;
   readonly telegram: TelegramConfig;
   /** Path to the SQLite file backing the audit log. */
   readonly databasePath: string;
+  readonly tally: TallyConfig;
 }
 
 /** Raised when one or more environment values are missing or malformed. */
@@ -120,6 +127,28 @@ function parseDatabasePath(env: NodeJS.ProcessEnv, problems: string[]): string {
   return raw;
 }
 
+const DEFAULT_TALLY_HOST = '127.0.0.1';
+const DEFAULT_TALLY_PORT = 9000;
+
+function parseTally(env: NodeJS.ProcessEnv, problems: string[]): TallyConfig {
+  const host = env.TALLY_HOST?.trim() || DEFAULT_TALLY_HOST;
+
+  let port = DEFAULT_TALLY_PORT;
+  const rawPort = env.TALLY_PORT?.trim();
+  if (rawPort) {
+    const parsed = Number(rawPort);
+    if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+      problems.push(`TALLY_PORT must be an integer between 1 and 65535 (got "${rawPort}")`);
+    } else {
+      port = parsed;
+    }
+  }
+
+  const companyName = readRequired(env, 'TALLY_COMPANY_NAME', problems) ?? '';
+
+  return { host, port, companyName };
+}
+
 function parsePort(env: NodeJS.ProcessEnv, problems: string[]): number {
   const raw = env.PORT?.trim();
   if (!raw) return 3000;
@@ -149,6 +178,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       allowedUserIds: parseAllowedUserIds(env, problems),
     },
     databasePath: parseDatabasePath(env, problems),
+    tally: parseTally(env, problems),
   };
 
   if (problems.length > 0) throw new ConfigError(problems);

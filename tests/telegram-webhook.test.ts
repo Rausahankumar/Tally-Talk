@@ -41,6 +41,7 @@ const config: Config = {
     allowedUserIds: new Set([AUTHORIZED_USER_ID]),
   },
   databasePath: ':memory:',
+  tally: { host: '127.0.0.1', port: 9000, companyName: 'Test Company' },
 };
 
 function messageUpdate(userId: number, text: string): object {

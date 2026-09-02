@@ -4,36 +4,39 @@ _Last updated: 2026-09-02_
 
 ## Current phase
 
-Phase 2 — SQLite append-only audit log. **Complete.**
+Phase 3 — Tally XML client and master data sync. **Complete.**
 
 ## Current task
 
-None. Awaiting approval to begin Phase 3.
+None. Awaiting approval to begin Phase 4.
 
 ## Completed work
 
-**Phase 0 — Foundation & Toolchain**
-- Git, documentation set, TypeScript 5.9 strict + Vitest 4.
+**Phases 0–2** — foundation, Telegram webhook with secret + allowlist gates,
+append-only SQLite audit log. See git history for detail.
 
-**Phase 1 — Telegram Webhook Vertical Slice**
-- `src/config/` startup validation; `src/channels/telegram/` webhook, parser and
-  Bot API client; Express 5 app with `/health` and `POST /webhook/telegram`.
-- Gates in order: constant-time secret-token check → 401; allowlist check →
-  acknowledged and dropped silently.
-
-**Phase 2 — Audit Log**
-- `src/db/schema.ts` — `audit_events` table, three indexes, CHECK constraints
-  covering the whole event vocabulary, and `BEFORE UPDATE`/`BEFORE DELETE`
-  triggers that abort. Migrations tracked via `PRAGMA user_version`.
-- `src/db/sqlite.ts` — opens the database on Node's built-in `node:sqlite`,
-  sets WAL and busy-timeout pragmas, creates the parent directory, migrates.
-- `src/audit/events.ts` — one envelope for every event; `data` is a JSON column
-  so later phases record richer payloads with no schema change.
-- `src/audit/log.ts` — `record` and `findByCorrelationId` only. A failed write is
-  logged loudly but never breaks request handling.
-- Webhook now records `webhook.rejected`, `message.received`, and
-  `authorization.granted` / `authorization.denied`, all under one
-  `correlationId` per inbound update.
+**Phase 3 — Tally Master Data Sync**
+- `src/tally/xml.ts` — builds the TDL `COLLECTION` export request and parses the
+  response into raw string-valued records. Distinguishes a legitimately empty
+  collection, a rejected request (`<RESPONSE>Unknown Request...</RESPONSE>`),
+  and a non-success `STATUS` — three cases that look similar but mean different
+  things.
+- `src/tally/client.ts` — `TallyClient.exportCollection` only. **Export, never
+  Import** — there is no method here capable of writing to Tally, by design.
+  Injectable `fetch` and a 10s timeout so a closed TallyPrime fails fast.
+- `src/tally/masters.ts` — declares the five MVP master types (Ledger,
+  StockItem, Godown, Unit, VoucherType) and their field lists, and
+  `syncMasterData` to fetch and cache all of them.
+- `src/tally/cache.ts` + migration 2 (`tally_masters` table) — a resync
+  transactionally replaces one master type's rows; readers never see a
+  half-updated set.
+- `npm run tally:sync` — manual, on-demand sync CLI (no scheduled sync in this
+  phase, per MVP scope).
+- Every request shape and edge case was confirmed **live against the target
+  company** (Nirmal FMCG Traders Ltd) before being written into code; a real
+  captured response is the test fixture for the parser. Full sync run twice
+  live: 29 ledgers, 23 stock items, 12 godowns, 4 units, 27 voucher types, and
+  confirmed idempotent (95 rows both times, no duplication).
 
 ## Work in progress
 
@@ -41,25 +44,26 @@ None.
 
 ## Next task
 
-Phase 3 — Tally XML/HTTP client and master data sync: connect to TallyPrime on
-the LAN, export ledgers, stock items, godowns and tax ledgers, and cache them
-locally for fuzzy matching. No LLM yet.
+Phase 4 — LLM module: provider-agnostic client, structured extraction schema,
+single call combining intent detection and field extraction. No validation or
+Tally posting yet; extraction output is not sent anywhere near Tally.
 
 ## Known issues / blockers
 
-- **No GitHub remote and `gh` CLI is not installed** — push and pull-request
-  workflow unavailable. All commits are local only.
-- `main` branch still has no commits; history is on the phase branches.
-- `node:sqlite` is still marked experimental in Node; accepted deliberately
-  (`DECISIONS.md` #11) and prints no warning in Node 24.
-- No rate limiting yet (planned for Phase 8).
-- LLM provider still undecided (deliberate — `DECISIONS.md` #3).
+- No GitHub remote and `gh` CLI is not installed — local commits only.
+- `node:sqlite` remains experimental (accepted, `DECISIONS.md` #11).
+- No rate limiting yet (Phase 8).
+- LLM provider still undecided (deliberate, `DECISIONS.md` #3).
+- Master field lists are intentionally narrow (e.g. `Ledger` has no GST fields
+  yet); Phase 5 (validation) is expected to add fields as real validation rules
+  need them, not before.
 
 ## Last important technical decision
 
-SQLite was **kept** for the audit log after a proposed switch to MongoDB was
-evaluated and reverted: on-prem deployment next to TallyPrime makes a plain file
-— nothing to install, no service, no open port, backup by file copy — worth more
-than a document store's modelling convenience at this scale. Recorded as
-`DECISIONS.md` #10, with #11 (built-in `node:sqlite`, no native addon) and #12
-(append-only enforced by database triggers) following from it.
+An ad-hoc `COLLECTION` export via Tally's TDL request shape was confirmed live
+to be the correct approach — the more obvious named-report shape (the one behind
+Tally's own "All Masters" file export) returns `Unknown Request, cannot be
+processed` for a custom collection; TDL's `<TYPE>COLLECTION</TYPE>` +
+`<TDL><TDLMESSAGE><COLLECTION>` shape is required. Also: the HTTP interface
+responds in plain UTF-8, unlike Tally's UTF-16LE file exports. `DECISIONS.md`
+#13.

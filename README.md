@@ -13,11 +13,12 @@ causes a write on its own.
 
 ## Status
 
-Phase 2 complete. The Express server accepts Telegram webhook updates, verifies
+Phase 3 complete. The Express server accepts Telegram webhook updates, verifies
 the secret token, checks the sender against the allowlist, appends every inbound
 message and authorization outcome to an append-only SQLite audit log, and echoes
-the message back. No LLM, Tally or conversation logic yet. See
-`PROJECT_STATUS.md`.
+the message back. A separate, manual command syncs and caches TallyPrime master
+data (ledgers, stock items, godowns, units, voucher types) read-only. No LLM,
+Tally posting or conversation logic yet. See `PROJECT_STATUS.md`.
 
 ## Requirements
 
@@ -41,6 +42,7 @@ Never commit `.env`.
 |---|---|
 | `npm start` | Run the server (reads `.env`) |
 | `npm run dev` | Run the server with file watching |
+| `npm run tally:sync` | Sync and cache TallyPrime master data (read-only) |
 | `npm test` | Run the test suite once |
 | `npm run test:watch` | Run tests in watch mode |
 | `npm run typecheck` | Type-check without emitting |

@@ -157,3 +157,54 @@ Important decisions only. Newest last.
   hash-chain over rows — meaningful tamper *detection*, but unnecessary
   complexity for an MVP whose file is already inside the trusted perimeter.
 - **Date:** 2026-09-02
+
+### 13. Tally requests use the TDL COLLECTION shape, not a named-report export
+
+- **Decision:** Master data is fetched with `TALLYREQUEST=EXPORT`, `TYPE=COLLECTION`,
+  and an inline `<TDL><TDLMESSAGE><COLLECTION>...` body naming exact fields — not
+  the `EXPORTDATA/REQUESTDESC/REPORTNAME` shape used by Tally's built-in named
+  reports (e.g. "All Masters", the format behind the file-export feature).
+- **Reason:** The named-report shape returns a fixed report's worth of fields
+  per record (a `LEDGER` carries 270 child tags in a full "All Masters" export)
+  with no way to ask for less. A collection request specifies exactly the
+  fields needed. Verified live against a running TallyPrime instance before
+  being written into `src/tally/xml.ts` — the first attempt using the
+  named-report shape for an ad-hoc collection returned `Unknown Request, cannot
+  be processed`; the corrected TDL shape returned real data.
+- **Alternatives considered:** The named-report shape — rejected for the reason
+  above; parsing Tally's UTF-16LE file-export format instead of the HTTP
+  interface — rejected because it requires Tally to have already written a file,
+  which isn't triggerable on demand over HTTP.
+- **Finding worth flagging:** the HTTP interface responds in plain UTF-8, unlike
+  Tally's file exports, which are UTF-16LE with a BOM. The client assumes UTF-8;
+  this should be re-confirmed if a different Tally version behaves otherwise.
+- **Date:** 2026-09-02
+
+### 14. Master data is cached as raw JSON, not normalised columns
+
+- **Decision:** `tally_masters` stores each record's fields as one JSON blob per
+  master (`data`), keyed by `(master_type, name)`. No per-field columns.
+- **Reason:** Ledger records alone carry radically different shapes depending on
+  configuration (GST fields, bill-wise settings, bank details). A fixed column
+  set would need a migration every time a phase needs one more field; JSON does
+  not. The one column actually queried on — `name` — is promoted out for the
+  lookup index.
+- **Alternatives considered:** A normalised `ledgers` / `stock_items` / ... table
+  per master type — more type safety, but five schemas to maintain for data this
+  MVP only reads back by name, and expanding a field list would still be a
+  migration.
+- **Date:** 2026-09-02
+
+### 15. A resync fully replaces one master type; no incremental diffing
+
+- **Decision:** `MasterCache.replaceAll` deletes and reinserts all rows for a
+  master type in one transaction on every sync. There is no update-in-place or
+  diff-based sync.
+- **Reason:** The MVP scope is periodic/on-demand full sync, not live updates.
+  Full replace is simple, and the transaction means a reader never sees a
+  half-updated set. Tally master data at this scale (dozens to low hundreds of
+  records) makes the cost of refetching everything negligible.
+- **Alternatives considered:** Incremental sync via Tally's ALTERID tracking —
+  real Tally capability, but meaningful complexity for a problem that doesn't
+  exist yet at this data volume.
+- **Date:** 2026-09-02

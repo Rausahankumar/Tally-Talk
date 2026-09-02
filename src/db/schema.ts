@@ -12,6 +12,7 @@ import { AUDIT_ACTOR_KINDS, AUDIT_CHANNELS, AUDIT_EVENT_TYPES } from '../audit/e
 import type { Logger } from '../logger.ts';
 
 export const AUDIT_EVENTS_TABLE = 'audit_events';
+export const TALLY_MASTERS_TABLE = 'tally_masters';
 
 /** Render a string list as a SQL `IN (...)` value list. */
 function sqlList(values: readonly string[]): string {
@@ -65,8 +66,30 @@ BEGIN
 END;
 `;
 
+/**
+ * Migration 2 — the Tally master data cache.
+ *
+ * Unlike `audit_events`, this is a cache, not a log: `data` holds the whole raw
+ * record as JSON so a new field Tally returns needs no migration, and a full
+ * resync replaces rows for a given `master_type` outright (Phase 3 does no
+ * incremental sync). `UNIQUE(master_type, name)` is what makes that replace
+ * idempotent rather than accumulating duplicates across syncs.
+ */
+const MIGRATION_2 = `
+CREATE TABLE ${TALLY_MASTERS_TABLE} (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  master_type   TEXT    NOT NULL,
+  name          TEXT    NOT NULL,
+  data          TEXT    NOT NULL CHECK (json_valid(data)),
+  synced_at     TEXT    NOT NULL,
+  UNIQUE (master_type, name)
+);
+
+CREATE INDEX idx_tally_masters_type ON ${TALLY_MASTERS_TABLE} (master_type);
+`;
+
 /** Ordered migrations. Append to this list; never edit an applied entry. */
-const MIGRATIONS: readonly string[] = [MIGRATION_1];
+const MIGRATIONS: readonly string[] = [MIGRATION_1, MIGRATION_2];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.length;
 
