@@ -9,6 +9,8 @@
  * `.env.example` but are not required until the phases that use them.
  */
 
+import { isRecognizedState } from '../gst/states.ts';
+
 export interface TelegramConfig {
   readonly botToken: string;
   readonly webhookSecret: string;
@@ -28,6 +30,24 @@ export interface LLMConfig {
   readonly model: string;
 }
 
+/**
+ * Backend-controlled GST ledger mapping. The LLM never sees or supplies any
+ * of this — it is loaded once at startup from `.env` and is the sole
+ * authority on which Tally ledgers a GST decision resolves to.
+ */
+export interface GstLedgerConfig {
+  readonly companyState: string;
+  readonly cgstLedger: string;
+  readonly sgstLedger: string;
+  readonly igstLedger: string;
+  /**
+   * An explicitly configured Place of Supply used only when a message states
+   * none. `null` means no default was configured — the user is always asked
+   * instead. Never inferred or turned on implicitly.
+   */
+  readonly defaultPlaceOfSupply: string | null;
+}
+
 export interface Config {
   readonly port: number;
   readonly nodeEnv: string;
@@ -36,6 +56,7 @@ export interface Config {
   readonly databasePath: string;
   readonly tally: TallyConfig;
   readonly llm: LLMConfig;
+  readonly gst: GstLedgerConfig;
 }
 
 /** Raised when one or more environment values are missing or malformed. */
@@ -171,6 +192,32 @@ function parseLLM(env: NodeJS.ProcessEnv, problems: string[]): LLMConfig {
   return { provider: 'anthropic', apiKey, model };
 }
 
+function parseGst(env: NodeJS.ProcessEnv, problems: string[]): GstLedgerConfig {
+  const companyState = readRequired(env, 'COMPANY_STATE', problems) ?? '';
+  if (companyState !== '' && !isRecognizedState(companyState)) {
+    problems.push(`COMPANY_STATE "${companyState}" is not a recognised Indian state or union territory`);
+  }
+
+  const cgstLedger = readRequired(env, 'CGST_LEDGER', problems) ?? '';
+  const sgstLedger = readRequired(env, 'SGST_LEDGER', problems) ?? '';
+  const igstLedger = readRequired(env, 'IGST_LEDGER', problems) ?? '';
+
+  const rawDefault = env.DEFAULT_PLACE_OF_SUPPLY?.trim() || null;
+  if (rawDefault !== null && !isRecognizedState(rawDefault)) {
+    problems.push(
+      `DEFAULT_PLACE_OF_SUPPLY "${rawDefault}" is not a recognised Indian state or union territory`,
+    );
+  }
+
+  return {
+    companyState,
+    cgstLedger,
+    sgstLedger,
+    igstLedger,
+    defaultPlaceOfSupply: rawDefault,
+  };
+}
+
 function parsePort(env: NodeJS.ProcessEnv, problems: string[]): number {
   const raw = env.PORT?.trim();
   if (!raw) return 3000;
@@ -202,6 +249,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     databasePath: parseDatabasePath(env, problems),
     tally: parseTally(env, problems),
     llm: parseLLM(env, problems),
+    gst: parseGst(env, problems),
   };
 
   if (problems.length > 0) throw new ConfigError(problems);

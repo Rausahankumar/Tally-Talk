@@ -5,6 +5,8 @@
  * reviewed and tested without a database, an LLM, or Telegram.
  */
 
+import type { GstTreatment } from '../gst/treatment.ts';
+import type { PostingBlocker } from '../gst/postingReadiness.ts';
 import type { TransactionDraft } from '../llm/schema.ts';
 import type { DraftValidationResult, ValidationIssue } from '../validation/types.ts';
 import type { PendingClarification } from './types.ts';
@@ -36,9 +38,26 @@ export function buildFollowUpRequestText(issues: readonly ValidationIssue[]): st
 }
 
 export function buildClarificationText(pending: PendingClarification): string {
+  if (pending.kind === 'place_of_supply') {
+    return 'What is the Place of Supply for this transaction (the state where the goods or services are supplied to)?';
+  }
+
   const subject = pending.kind === 'party' ? 'customer or supplier' : 'item';
   const options = pending.candidates.map((name, index) => `${index + 1}. ${name}`).join('\n');
   return `I found more than one matching ${subject}. Which one did you mean?\n${options}`;
+}
+
+/**
+ * A configuration problem nothing the user can type will fix — a missing or
+ * non-existent GST/ledger mapping. Deliberately does not ask a question.
+ */
+export function buildConfigurationErrorText(blockers: readonly PostingBlocker[]): string {
+  const messages = [...new Set(blockers.map((b) => b.message))];
+  return [
+    "This transaction can't be completed because of a configuration issue:",
+    ...messages.map((m) => `  • ${m}`),
+    'Please contact whoever manages this bot to fix the configuration.',
+  ].join('\n');
 }
 
 function formatAmount(value: number): string {
@@ -46,7 +65,11 @@ function formatAmount(value: number): string {
 }
 
 /** Every field shown here is a *resolved* name from validation, not the raw draft text. */
-export function buildPreviewText(draft: TransactionDraft, validation: DraftValidationResult): string {
+export function buildPreviewText(
+  draft: TransactionDraft,
+  validation: DraftValidationResult,
+  gstTreatment: GstTreatment | null = null,
+): string {
   const lines: string[] = [];
   const kind = draft.voucherType === 'purchase' ? 'Purchase' : 'Sales';
   lines.push(`${kind} voucher — please review:`);
@@ -64,6 +87,13 @@ export function buildPreviewText(draft: TransactionDraft, validation: DraftValid
 
   lines.push('');
   lines.push(`GST rate: ${draft.gstPercent}%`);
+  if (gstTreatment !== null) {
+    const basis =
+      gstTreatment.type === 'intrastate'
+        ? `Intrastate (CGST + SGST) — Place of Supply: ${gstTreatment.placeOfSupply}`
+        : `Interstate (IGST) — Place of Supply: ${gstTreatment.placeOfSupply}`;
+    lines.push(`GST treatment: ${basis}`);
+  }
   lines.push('');
   lines.push('Nothing has been sent to TallyPrime yet.');
   lines.push('Tap Confirm to proceed, or Cancel to discard.');

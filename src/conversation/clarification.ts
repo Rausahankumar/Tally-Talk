@@ -11,6 +11,7 @@
  * master lookup in this project.
  */
 
+import { canonicalStateName } from '../gst/states.ts';
 import type { TransactionDraft } from '../llm/schema.ts';
 import { matchName } from '../validation/fuzzyMatch.ts';
 import type { DraftValidationResult } from '../validation/types.ts';
@@ -43,33 +44,47 @@ export function deriveClarification(validation: DraftValidationResult): PendingC
 }
 
 /**
- * Try to read the user's reply as a choice among `pending`'s candidates.
- * Returns `null` if the reply does not clearly pick one — the caller then
+ * Try to read the user's reply as a choice among `pending`'s candidates (for
+ * `party`/`item`) or as a recognised state name (for `place_of_supply`).
+ * Returns `null` if the reply does not clearly resolve it — the caller then
  * falls back to normal extraction, since the user may simply be saying
  * something else entirely.
+ *
+ * The place-of-supply case is deliberately exact-only (via
+ * `canonicalStateName`, not `matchName`'s fuzzy tier): guessing a state name
+ * wrong flips the GST treatment entirely, unlike a near-miss on a ledger
+ * candidate list where the field itself is still open to a normal follow-up.
  */
 export function resolveClarificationReply(
   pending: PendingClarification,
   replyText: string,
 ): string | null {
+  if (pending.kind === 'place_of_supply') {
+    return canonicalStateName(replyText);
+  }
+
   const match = matchName(replyText, pending.candidates);
   return match.status === 'exact' || match.status === 'fuzzy' ? match.matchedName : null;
 }
 
-/** Apply a resolved candidate name to the field `pending` was asking about. */
+/** Apply a resolved value to the field `pending` was asking about. */
 export function applyClarification(
   draft: TransactionDraft,
   pending: PendingClarification,
-  resolvedName: string,
+  resolvedValue: string,
 ): TransactionDraft {
   if (pending.kind === 'party') {
-    return { ...draft, partyName: resolvedName };
+    return { ...draft, partyName: resolvedValue };
+  }
+
+  if (pending.kind === 'place_of_supply') {
+    return { ...draft, placeOfSupply: resolvedValue };
   }
 
   return {
     ...draft,
     items: draft.items.map((item, index) =>
-      index === pending.itemIndex ? { ...item, itemName: resolvedName } : item,
+      index === pending.itemIndex ? { ...item, itemName: resolvedValue } : item,
     ),
   };
 }

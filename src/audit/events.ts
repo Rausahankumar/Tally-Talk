@@ -43,6 +43,8 @@ export const AUDIT_EVENT_TYPES = [
   'tally.request.sent',
   'tally.response.received',
   'tally.posting.rejected',
+  // Phase 8 — GST and ledger determination
+  'gst.determination.completed',
 ] as const;
 
 export type AuditEventType = (typeof AUDIT_EVENT_TYPES)[number];

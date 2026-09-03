@@ -43,6 +43,7 @@ function validDraft(overrides: Partial<TransactionDraft> = {}): TransactionDraft
     partyName: 'Suresh & Sons',
     items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500 }],
     gstPercent: 18,
+    placeOfSupply: null,
     missingFields: [],
     ambiguityNote: null,
     ...overrides,
@@ -317,6 +318,7 @@ describe('validateTransactionDraft - multiple issues at once', () => {
       partyName: null,
       items: [{ itemName: '', quantity: -1, rate: 0 }],
       gstPercent: 99,
+      placeOfSupply: null,
       missingFields: [],
       ambiguityNote: null,
     });

@@ -2,14 +2,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createAuditLog } from '../src/audit/log.ts';
 import type { AuditLog } from '../src/audit/log.ts';
+import type { GstLedgerConfig } from '../src/config/index.ts';
 import { CONVERSATION_DRAFTS_TABLE } from '../src/db/schema.ts';
+import { createItemLedgerMappingStore } from '../src/gst/itemLedgerMapping.ts';
+import type { ItemLedgerMappingStore } from '../src/gst/itemLedgerMapping.ts';
+import { createTallyMasterCache } from '../src/tally/cache.ts';
 import {
   PostingRejectedError,
   createPostingStore,
   createTallyPostingClient,
   postConfirmedTransaction,
 } from '../src/tally/posting.ts';
-import type { FetchLike, PostingStore, TallyPostingClient } from '../src/tally/posting.ts';
+import type {
+  FetchLike,
+  PostConfirmedTransactionDeps,
+  PostingStore,
+  TallyPostingClient,
+} from '../src/tally/posting.ts';
 import type { SalesVoucherInput } from '../src/tally/postingXml.ts';
 import type { Database } from '../src/db/sqlite.ts';
 import { silentLogger } from '../src/logger.ts';
@@ -18,6 +27,40 @@ import { createTestDatabase } from './helpers/testDatabase.ts';
 const CHAT_ID = 5150;
 const USER_ID = 111;
 const DRAFT_VERSION_ID = 'draft-version-abc';
+
+const GST_CONFIG: GstLedgerConfig = {
+  companyState: 'Delhi',
+  cgstLedger: 'CGST',
+  sgstLedger: 'SGST',
+  igstLedger: 'IGST',
+  defaultPlaceOfSupply: null,
+};
+
+/** A draft + Phase 5 validation that is fully ready under Phase 8's readiness check. */
+const READY_DRAFT_JSON = JSON.stringify({
+  voucherType: 'sales',
+  partyName: 'Suresh & Sons',
+  items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500 }],
+  gstPercent: 18,
+  placeOfSupply: 'Delhi', // same as GST_CONFIG.companyState -> intrastate (CGST+SGST)
+  missingFields: [],
+  ambiguityNote: null,
+});
+const READY_VALIDATION_JSON = JSON.stringify({
+  isValid: true,
+  voucherTypeValid: true,
+  partyMatch: { status: 'exact', matchedName: 'Suresh & Sons', candidates: [] },
+  items: [
+    {
+      itemName: 'Steel Rods',
+      stockItemMatch: { status: 'exact', matchedName: 'Steel Rods', candidates: [] },
+      quantityValid: true,
+      rateValid: true,
+    },
+  ],
+  gstPercentValid: true,
+  issues: [],
+});
 
 function voucherInput(): SalesVoucherInput {
   return {
@@ -43,22 +86,51 @@ function insertConfirmedDraft(
   status = 'confirmed',
   draftVersionId = DRAFT_VERSION_ID,
   chatId = CHAT_ID,
+  draftJson = READY_DRAFT_JSON,
+  validationJson = READY_VALIDATION_JSON,
 ): void {
-  db.exec(`
+  const stmt = db.prepare(`
     INSERT INTO ${CONVERSATION_DRAFTS_TABLE}
       (chat_id, telegram_user_id, draft_version_id, status, draft_json, validation_json, created_at, updated_at, expires_at)
-    VALUES (${chatId}, ${USER_ID}, '${draftVersionId}', '${status}', '{}', '{}', '2026-01-01', '2026-01-01', '2099-01-01')
+    VALUES (@chatId, @userId, @draftVersionId, @status, @draftJson, @validationJson, @now, @now, @expires)
   `);
+  stmt.run({
+    chatId,
+    userId: USER_ID,
+    draftVersionId,
+    status,
+    draftJson,
+    validationJson,
+    now: '2026-01-01',
+    expires: '2099-01-01',
+  });
 }
 
 let database: Database;
 let auditLog: AuditLog;
 let postingStore: PostingStore;
+let itemLedgerMappingStore: ItemLedgerMappingStore;
 
 beforeEach(() => {
   database = createTestDatabase();
   auditLog = createAuditLog({ db: database.db, logger: silentLogger });
   postingStore = createPostingStore(database.db);
+  itemLedgerMappingStore = createItemLedgerMappingStore(database.db);
+
+  // Masters and mapping the READY_* fixtures above depend on for a fully
+  // ready checkPostingReadiness() result: CGST/SGST (Delhi == Delhi ->
+  // intrastate) and the "Sales" ledger the default voucherInput() credits.
+  createTallyMasterCache({ db: database.db }).replaceAll('Ledger', [
+    { NAME: 'CGST', PARENT: 'Duties & Taxes' },
+    { NAME: 'SGST', PARENT: 'Duties & Taxes' },
+    { NAME: 'IGST', PARENT: 'Duties & Taxes' },
+    { NAME: 'Sales', PARENT: 'Sales Accounts' },
+  ]);
+  itemLedgerMappingStore.setMapping({
+    stockItemName: 'Steel Rods',
+    salesLedger: 'Sales',
+    purchaseLedger: 'Purchase',
+  });
 });
 
 afterEach(() => {
@@ -69,6 +141,17 @@ function auditRows(): { type: string; data: string }[] {
   return database.db
     .prepare('SELECT type, data FROM audit_events ORDER BY id')
     .all() as unknown as { type: string; data: string }[];
+}
+
+function deps(client: TallyPostingClient): PostConfirmedTransactionDeps {
+  return {
+    db: database.db,
+    postingStore,
+    postingClient: client,
+    auditLog,
+    gstConfig: GST_CONFIG,
+    itemLedgerMappingStore,
+  };
 }
 
 describe('createTallyPostingClient', () => {
@@ -212,10 +295,7 @@ describe('postConfirmedTransaction', () => {
     const client = scriptedClient({ outcome: 'posted', message: 'ok', tallyVoucherId: '1', raw: '' });
 
     await expect(
-      postConfirmedTransaction(
-        { db: database.db, postingStore, postingClient: client, auditLog },
-        { draftVersionId: DRAFT_VERSION_ID, voucher: voucherInput() },
-      ),
+      postConfirmedTransaction(deps(client), { draftVersionId: DRAFT_VERSION_ID, voucher: voucherInput() }),
     ).rejects.toThrow(PostingRejectedError);
 
     expect(postingStore.getPosting(DRAFT_VERSION_ID)).toBeNull(); // no attempt was ever started
@@ -226,10 +306,7 @@ describe('postConfirmedTransaction', () => {
     const client = scriptedClient({ outcome: 'posted', message: 'ok', tallyVoucherId: '1', raw: '' });
 
     await expect(
-      postConfirmedTransaction(
-        { db: database.db, postingStore, postingClient: client, auditLog },
-        { draftVersionId: 'no-such-version', voucher: voucherInput() },
-      ),
+      postConfirmedTransaction(deps(client), { draftVersionId: 'no-such-version', voucher: voucherInput() }),
     ).rejects.toThrow(PostingRejectedError);
   });
 
@@ -237,10 +314,10 @@ describe('postConfirmedTransaction', () => {
     insertConfirmedDraft(database.db);
     const client = scriptedClient({ outcome: 'posted', message: 'Voucher created in TallyPrime', tallyVoucherId: '77', raw: '<RESPONSE/>' });
 
-    const result = await postConfirmedTransaction(
-      { db: database.db, postingStore, postingClient: client, auditLog },
-      { draftVersionId: DRAFT_VERSION_ID, voucher: voucherInput() },
-    );
+    const result = await postConfirmedTransaction(deps(client), {
+      draftVersionId: DRAFT_VERSION_ID,
+      voucher: voucherInput(),
+    });
 
     expect(result).toEqual({ status: 'posted', message: 'Voucher created in TallyPrime', tallyVoucherId: '77' });
     expect(postingStore.getPosting(DRAFT_VERSION_ID)?.status).toBe('posted');
@@ -253,10 +330,10 @@ describe('postConfirmedTransaction', () => {
     insertConfirmedDraft(database.db);
     const client = scriptedClient({ outcome: 'failed', message: 'Ledger does not exist', tallyVoucherId: null, raw: '<RESPONSE/>' });
 
-    const result = await postConfirmedTransaction(
-      { db: database.db, postingStore, postingClient: client, auditLog },
-      { draftVersionId: DRAFT_VERSION_ID, voucher: voucherInput() },
-    );
+    const result = await postConfirmedTransaction(deps(client), {
+      draftVersionId: DRAFT_VERSION_ID,
+      voucher: voucherInput(),
+    });
 
     expect(result.status).toBe('failed');
     expect(postingStore.getPosting(DRAFT_VERSION_ID)?.status).toBe('failed');
@@ -266,10 +343,10 @@ describe('postConfirmedTransaction', () => {
     insertConfirmedDraft(database.db);
     const client = scriptedClient({ outcome: 'uncertain', message: 'Could not confirm the outcome: timeout', tallyVoucherId: null, raw: '' });
 
-    const result = await postConfirmedTransaction(
-      { db: database.db, postingStore, postingClient: client, auditLog },
-      { draftVersionId: DRAFT_VERSION_ID, voucher: voucherInput() },
-    );
+    const result = await postConfirmedTransaction(deps(client), {
+      draftVersionId: DRAFT_VERSION_ID,
+      voucher: voucherInput(),
+    });
 
     expect(result.status).toBe('uncertain');
     expect(postingStore.getPosting(DRAFT_VERSION_ID)?.status).toBe('uncertain');
@@ -279,10 +356,7 @@ describe('postConfirmedTransaction', () => {
     insertConfirmedDraft(database.db);
     const client = scriptedClient({ outcome: 'uncertain', message: 'HTTP 500', tallyVoucherId: null, raw: 'raw body' });
 
-    await postConfirmedTransaction(
-      { db: database.db, postingStore, postingClient: client, auditLog },
-      { draftVersionId: DRAFT_VERSION_ID, voucher: voucherInput() },
-    );
+    await postConfirmedTransaction(deps(client), { draftVersionId: DRAFT_VERSION_ID, voucher: voucherInput() });
 
     const record = postingStore.getPosting(DRAFT_VERSION_ID);
     expect(record?.requestXml).toContain('<ENVELOPE>');
@@ -293,12 +367,12 @@ describe('postConfirmedTransaction', () => {
   it('never posts a second time for an already-posted transaction', async () => {
     insertConfirmedDraft(database.db);
     const client = scriptedClient({ outcome: 'posted', message: 'ok', tallyVoucherId: '1', raw: '' });
-    const deps = { db: database.db, postingStore, postingClient: client, auditLog };
+    const d = deps(client);
 
-    await postConfirmedTransaction(deps, { draftVersionId: DRAFT_VERSION_ID, voucher: voucherInput() });
+    await postConfirmedTransaction(d, { draftVersionId: DRAFT_VERSION_ID, voucher: voucherInput() });
     const importSpy = vi.spyOn(client, 'importVoucher');
 
-    const second = await postConfirmedTransaction(deps, { draftVersionId: DRAFT_VERSION_ID, voucher: voucherInput() });
+    const second = await postConfirmedTransaction(d, { draftVersionId: DRAFT_VERSION_ID, voucher: voucherInput() });
 
     expect(importSpy).not.toHaveBeenCalled();
     expect(second).toEqual({ status: 'posted', message: 'ok', tallyVoucherId: '1' });
@@ -307,18 +381,18 @@ describe('postConfirmedTransaction', () => {
   it('does not retry a prior failed attempt automatically', async () => {
     insertConfirmedDraft(database.db);
     const firstClient = scriptedClient({ outcome: 'failed', message: 'Bad ledger', tallyVoucherId: null, raw: '' });
-    await postConfirmedTransaction(
-      { db: database.db, postingStore, postingClient: firstClient, auditLog },
-      { draftVersionId: DRAFT_VERSION_ID, voucher: voucherInput() },
-    );
+    await postConfirmedTransaction(deps(firstClient), {
+      draftVersionId: DRAFT_VERSION_ID,
+      voucher: voucherInput(),
+    });
 
     const secondClient = scriptedClient({ outcome: 'posted', message: 'ok', tallyVoucherId: '1', raw: '' });
     const importSpy = vi.spyOn(secondClient, 'importVoucher');
 
-    const result = await postConfirmedTransaction(
-      { db: database.db, postingStore, postingClient: secondClient, auditLog },
-      { draftVersionId: DRAFT_VERSION_ID, voucher: voucherInput() },
-    );
+    const result = await postConfirmedTransaction(deps(secondClient), {
+      draftVersionId: DRAFT_VERSION_ID,
+      voucher: voucherInput(),
+    });
 
     expect(importSpy).not.toHaveBeenCalled();
     expect(result.status).toBe('failed'); // the original, preserved outcome — not silently retried
@@ -327,18 +401,18 @@ describe('postConfirmedTransaction', () => {
   it('does not retry a prior uncertain attempt automatically', async () => {
     insertConfirmedDraft(database.db);
     const firstClient = scriptedClient({ outcome: 'uncertain', message: 'timeout', tallyVoucherId: null, raw: '' });
-    await postConfirmedTransaction(
-      { db: database.db, postingStore, postingClient: firstClient, auditLog },
-      { draftVersionId: DRAFT_VERSION_ID, voucher: voucherInput() },
-    );
+    await postConfirmedTransaction(deps(firstClient), {
+      draftVersionId: DRAFT_VERSION_ID,
+      voucher: voucherInput(),
+    });
 
     const secondClient = scriptedClient({ outcome: 'posted', message: 'ok', tallyVoucherId: '1', raw: '' });
     const importSpy = vi.spyOn(secondClient, 'importVoucher');
 
-    const result = await postConfirmedTransaction(
-      { db: database.db, postingStore, postingClient: secondClient, auditLog },
-      { draftVersionId: DRAFT_VERSION_ID, voucher: voucherInput() },
-    );
+    const result = await postConfirmedTransaction(deps(secondClient), {
+      draftVersionId: DRAFT_VERSION_ID,
+      voucher: voucherInput(),
+    });
 
     expect(importSpy).not.toHaveBeenCalled();
     expect(result.status).toBe('uncertain');
@@ -353,18 +427,20 @@ describe('postConfirmedTransaction', () => {
           resolveFirst = resolve as typeof resolveFirst;
         }),
     };
-    const deps = { db: database.db, postingStore, postingClient: firstClient, auditLog };
 
-    const firstCall = postConfirmedTransaction(deps, { draftVersionId: DRAFT_VERSION_ID, voucher: voucherInput() });
+    const firstCall = postConfirmedTransaction(deps(firstClient), {
+      draftVersionId: DRAFT_VERSION_ID,
+      voucher: voucherInput(),
+    });
 
     // The row now exists with status 'posting' — a concurrent second attempt
     // must see that and refuse, synchronously, before the first ever resolves.
     const secondClient = scriptedClient({ outcome: 'posted', message: 'ok', tallyVoucherId: 'x', raw: '' });
     const importSpy = vi.spyOn(secondClient, 'importVoucher');
-    const secondResult = await postConfirmedTransaction(
-      { db: database.db, postingStore, postingClient: secondClient, auditLog },
-      { draftVersionId: DRAFT_VERSION_ID, voucher: voucherInput() },
-    );
+    const secondResult = await postConfirmedTransaction(deps(secondClient), {
+      draftVersionId: DRAFT_VERSION_ID,
+      voucher: voucherInput(),
+    });
 
     expect(importSpy).not.toHaveBeenCalled();
     expect(secondResult.status).toBe('posting');
@@ -380,10 +456,7 @@ describe('postConfirmedTransaction', () => {
       insertConfirmedDraft(database.db, 'confirmed', versionId, CHAT_ID + index + 1);
       const client = scriptedClient({ outcome, message: outcome, tallyVoucherId: null, raw: '' });
 
-      await postConfirmedTransaction(
-        { db: database.db, postingStore: createPostingStore(database.db), postingClient: client, auditLog },
-        { draftVersionId: versionId, voucher: voucherInput() },
-      );
+      await postConfirmedTransaction(deps(client), { draftVersionId: versionId, voucher: voucherInput() });
     }
 
     const types = auditRows().map((r) => r.type);
@@ -395,12 +468,56 @@ describe('postConfirmedTransaction', () => {
     insertConfirmedDraft(database.db);
     const client = scriptedClient({ outcome: 'posted', message: 'ok', tallyVoucherId: '1', raw: '' });
 
-    await postConfirmedTransaction(
-      { db: database.db, postingStore, postingClient: client, auditLog },
-      { draftVersionId: DRAFT_VERSION_ID, voucher: voucherInput(), correlationId: 'existing-correlation-id' },
-    );
+    await postConfirmedTransaction(deps(client), {
+      draftVersionId: DRAFT_VERSION_ID,
+      voucher: voucherInput(),
+      correlationId: 'existing-correlation-id',
+    });
 
     const events = auditLog.findByCorrelationId('existing-correlation-id');
     expect(events.length).toBeGreaterThan(0);
+  });
+
+  describe('GST/ledger readiness gate (Phase 8)', () => {
+    it('rejects posting when the stored draft has no GST/ledger readiness at all', async () => {
+      insertConfirmedDraft(database.db, 'confirmed', DRAFT_VERSION_ID, CHAT_ID, '{}', '{}');
+      const client = scriptedClient({ outcome: 'posted', message: 'ok', tallyVoucherId: '1', raw: '' });
+      const importSpy = vi.spyOn(client, 'importVoucher');
+
+      await expect(
+        postConfirmedTransaction(deps(client), { draftVersionId: DRAFT_VERSION_ID, voucher: voucherInput() }),
+      ).rejects.toThrow(PostingRejectedError);
+
+      expect(importSpy).not.toHaveBeenCalled();
+      expect(postingStore.getPosting(DRAFT_VERSION_ID)).toBeNull();
+      expect(auditRows().map((r) => r.type)).toContain('tally.posting.rejected');
+    });
+
+    it('rejects posting when a configured GST ledger no longer exists in the cache', async () => {
+      insertConfirmedDraft(database.db);
+      // Simulate the ledger having been renamed/removed in Tally since confirmation.
+      createTallyMasterCache({ db: database.db }).replaceAll('Ledger', [{ NAME: 'Sales', PARENT: '' }]);
+      const client = scriptedClient({ outcome: 'posted', message: 'ok', tallyVoucherId: '1', raw: '' });
+      const importSpy = vi.spyOn(client, 'importVoucher');
+
+      await expect(
+        postConfirmedTransaction(deps(client), { draftVersionId: DRAFT_VERSION_ID, voucher: voucherInput() }),
+      ).rejects.toThrow(PostingRejectedError);
+
+      expect(importSpy).not.toHaveBeenCalled();
+    });
+
+    it('rejects posting when the item ledger mapping was removed after confirmation', async () => {
+      insertConfirmedDraft(database.db);
+      database.db.exec("DELETE FROM item_ledger_mappings WHERE stock_item_name = 'Steel Rods'");
+      const client = scriptedClient({ outcome: 'posted', message: 'ok', tallyVoucherId: '1', raw: '' });
+      const importSpy = vi.spyOn(client, 'importVoucher');
+
+      await expect(
+        postConfirmedTransaction(deps(client), { draftVersionId: DRAFT_VERSION_ID, voucher: voucherInput() }),
+      ).rejects.toThrow(PostingRejectedError);
+
+      expect(importSpy).not.toHaveBeenCalled();
+    });
   });
 });

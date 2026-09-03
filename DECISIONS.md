@@ -441,3 +441,54 @@ Important decisions only. Newest last.
   sign convention — rejected as an unverified assumption in a place where
   being wrong has real financial consequences.
 - **Date:** 2026-09-02
+
+### 28. GST treatment is Company State vs. Place of Supply, never the party's state
+
+- **Decision:** `determineGstTreatment` (`src/gst/treatment.ts`) compares only
+  `COMPANY_STATE` (config) against a transaction's Place of Supply. It never
+  reads or is given the party's state, and `TransactionDraft` carries no party
+  state field for it to read even if it wanted to.
+- **Reason:** Directed by the project owner, for a real reason: a party can be
+  registered in one state and still receive goods at a different place of
+  supply (a branch office, a job site, a bill-to/ship-to split). Assuming
+  party state equals place of supply would silently produce the wrong GST
+  treatment in exactly that case — a wrong CGST+SGST/IGST split is a real
+  compliance error, not a cosmetic one.
+- **Alternatives considered:** Deriving Place of Supply from the party
+  ledger's registered state (already resolvable via Phase 5 matching) —
+  rejected outright per the above; it is the specific assumption this
+  decision exists to prevent.
+- **Date:** 2026-09-02
+
+### 29. Place of Supply is asked for and resolved deterministically, never guessed
+
+- **Decision:** When a message has no explicit Place of Supply and no
+  `DEFAULT_PLACE_OF_SUPPLY` is configured, the conversation asks the user
+  directly. The reply is resolved via `canonicalStateName` — an exact,
+  case/whitespace-insensitive match against the fixed state list — never
+  `matchName`'s fuzzy tier used for ledger/party candidates elsewhere in this
+  project.
+- **Reason:** A near-miss on a ledger candidate list is safe to ask about
+  again; a near-miss on a state name silently flips the entire GST treatment
+  (CGST+SGST vs. IGST) if accepted. The cost of getting this specific field
+  wrong is categorically higher than an ordinary disambiguation, so it gets a
+  stricter matching rule than everything else that reuses the same
+  clarification mechanism.
+- **Date:** 2026-09-02
+
+### 30. GST/ledger readiness is re-checked independently at posting time, not trusted from the conversation layer
+
+- **Decision:** `postConfirmedTransaction` (Phase 7) now re-runs
+  `checkPostingReadiness` itself, against the `draft_json`/`validation_json`
+  actually stored for the draft version being posted — it does not trust that
+  the conversation layer's earlier readiness check still holds.
+- **Reason:** A ledger can be renamed or deleted in Tally, or an item's
+  Sales/Purchase mapping changed, in the window between a user confirming a
+  transaction and the (separate, not-yet-wired) posting step actually running.
+  Re-deriving readiness from the stored state at the moment of posting closes
+  that gap rather than trusting a decision made possibly minutes earlier.
+- **Alternatives considered:** Trusting the `ready_for_confirmation` status
+  transition alone — leaves a real TOCTOU (time-of-check-to-time-of-use) window
+  open for exactly the kind of configuration drift this phase exists to guard
+  against.
+- **Date:** 2026-09-02

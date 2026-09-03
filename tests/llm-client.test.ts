@@ -9,6 +9,7 @@ const VALID_DRAFT_INPUT = {
   partyName: 'Ramesh',
   items: [{ itemName: 'cement', quantity: 100, rate: 500 }],
   gstPercent: 18,
+  placeOfSupply: null,
   missingFields: [],
   ambiguityNote: null,
 };

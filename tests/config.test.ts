@@ -12,6 +12,10 @@ function validEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
     TELEGRAM_ALLOWED_USER_IDS: '111,222',
     TALLY_COMPANY_NAME: 'Nirmal FMCG Traders Ltd',
     LLM_API_KEY: 'sk-ant-test-key-not-real',
+    COMPANY_STATE: 'Delhi',
+    CGST_LEDGER: 'CGST',
+    SGST_LEDGER: 'SGST',
+    IGST_LEDGER: 'IGST',
     ...overrides,
   };
 }
@@ -47,12 +51,16 @@ describe('loadConfig', () => {
   it('reports every missing required key at once', () => {
     const problems = problemsFrom({});
 
-    expect(problems).toHaveLength(5);
+    expect(problems).toHaveLength(9);
     expect(problems.join('\n')).toContain('TELEGRAM_BOT_TOKEN');
     expect(problems.join('\n')).toContain('TELEGRAM_WEBHOOK_SECRET');
     expect(problems.join('\n')).toContain('TELEGRAM_ALLOWED_USER_IDS');
     expect(problems.join('\n')).toContain('TALLY_COMPANY_NAME');
     expect(problems.join('\n')).toContain('LLM_API_KEY');
+    expect(problems.join('\n')).toContain('COMPANY_STATE');
+    expect(problems.join('\n')).toContain('CGST_LEDGER');
+    expect(problems.join('\n')).toContain('SGST_LEDGER');
+    expect(problems.join('\n')).toContain('IGST_LEDGER');
   });
 
   it('treats whitespace-only values as missing', () => {
@@ -173,5 +181,39 @@ describe('loadConfig', () => {
     expect(problemsFrom(validEnv({ LLM_PROVIDER: 'openai' })).join('\n')).toContain(
       'LLM_PROVIDER must be "anthropic"',
     );
+  });
+
+  it('reads a valid GST ledger configuration', () => {
+    const config = loadConfig(validEnv());
+
+    expect(config.gst).toEqual({
+      companyState: 'Delhi',
+      cgstLedger: 'CGST',
+      sgstLedger: 'SGST',
+      igstLedger: 'IGST',
+      defaultPlaceOfSupply: null,
+    });
+  });
+
+  it('rejects an unrecognised COMPANY_STATE', () => {
+    expect(problemsFrom(validEnv({ COMPANY_STATE: 'Narnia' })).join('\n')).toContain(
+      'not a recognised Indian state',
+    );
+  });
+
+  it('accepts an explicitly configured DEFAULT_PLACE_OF_SUPPLY', () => {
+    const config = loadConfig(validEnv({ DEFAULT_PLACE_OF_SUPPLY: 'Uttar Pradesh' }));
+
+    expect(config.gst.defaultPlaceOfSupply).toBe('Uttar Pradesh');
+  });
+
+  it('defaults to no Place of Supply default when unset', () => {
+    expect(loadConfig(validEnv()).gst.defaultPlaceOfSupply).toBeNull();
+  });
+
+  it('rejects an unrecognised DEFAULT_PLACE_OF_SUPPLY', () => {
+    expect(
+      problemsFrom(validEnv({ DEFAULT_PLACE_OF_SUPPLY: 'Narnia' })).join('\n'),
+    ).toContain('not a recognised Indian state');
   });
 });

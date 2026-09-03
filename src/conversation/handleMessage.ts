@@ -12,6 +12,9 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { AuditLog } from '../audit/log.ts';
 import { buildCallbackData } from '../channels/telegram/types.ts';
 import type { TelegramClient } from '../channels/telegram/client.ts';
+import type { GstLedgerConfig } from '../config/index.ts';
+import { checkPostingReadiness, isOnlyMissingPlaceOfSupply } from '../gst/postingReadiness.ts';
+import type { ItemLedgerMappingStore } from '../gst/itemLedgerMapping.ts';
 import type { LLMClient } from '../llm/client.ts';
 import { LLMConnectionError, LLMResponseError } from '../llm/client.ts';
 import { DraftValidationError } from '../llm/schema.ts';
@@ -21,12 +24,13 @@ import { applyClarification, deriveClarification, resolveClarificationReply } fr
 import { mergeDraft } from './merge.ts';
 import {
   buildClarificationText,
+  buildConfigurationErrorText,
   buildFollowUpRequestText,
   buildPreviewText,
   buildUnderstandingFailedText,
 } from './messages.ts';
 import type { ConversationStore } from './store.ts';
-import type { ConversationStatus } from './types.ts';
+import type { ConversationStatus, PendingClarification } from './types.ts';
 
 export interface MessageHandlerDeps {
   readonly db: DatabaseSync;
@@ -34,6 +38,8 @@ export interface MessageHandlerDeps {
   readonly telegram: TelegramClient;
   readonly conversationStore: ConversationStore;
   readonly auditLog: AuditLog;
+  readonly gstConfig: GstLedgerConfig;
+  readonly itemLedgerMappingStore: ItemLedgerMappingStore;
 }
 
 export interface IncomingTextTurn {
@@ -114,8 +120,42 @@ export async function handleIncomingTextMessage(
     data: { isValid: validation.isValid, issueCodes: validation.issues.map((issue) => issue.code) },
   });
 
-  const pending = deriveClarification(validation);
-  const status: ConversationStatus = validation.isValid ? 'ready_for_confirmation' : 'collecting';
+  let pending: PendingClarification | null = deriveClarification(validation);
+
+  // GST/ledger readiness is only worth checking once Phase 5 is clean and
+  // there is no outstanding party/item ambiguity to resolve first — asking
+  // about Place of Supply before the basics are sorted would be confusing.
+  const readiness =
+    validation.isValid && pending === null
+      ? checkPostingReadiness(
+          { db: deps.db, gstConfig: deps.gstConfig, itemLedgerMappingStore: deps.itemLedgerMappingStore },
+          candidateDraft,
+          validation,
+        )
+      : null;
+
+  if (readiness !== null) {
+    deps.auditLog.record({
+      correlationId: turn.correlationId,
+      type: 'gst.determination.completed',
+      channel: 'telegram',
+      actor,
+      data: {
+        ready: readiness.ready,
+        treatmentType: readiness.gstTreatment?.type ?? null,
+        blockerCodes: readiness.blockers.map((blocker) => blocker.code),
+      },
+    });
+
+    if (!readiness.ready && isOnlyMissingPlaceOfSupply(readiness)) {
+      // The one gap here is something the user can actually answer —
+      // deterministically resolved from their next reply, no LLM call.
+      pending = { kind: 'place_of_supply' };
+    }
+  }
+
+  const ready = validation.isValid && (readiness === null || readiness.ready);
+  const status: ConversationStatus = ready ? 'ready_for_confirmation' : 'collecting';
 
   const saved = deps.conversationStore.saveDraft({
     chatId: turn.chatId,
@@ -135,10 +175,14 @@ export async function handleIncomingTextMessage(
   });
 
   if (status === 'ready_for_confirmation') {
-    await deps.telegram.sendMessage(turn.chatId, buildPreviewText(candidateDraft, validation), [
-      { text: 'Confirm', callbackData: buildCallbackData('confirm', saved.draftVersionId) },
-      { text: 'Cancel', callbackData: buildCallbackData('cancel', saved.draftVersionId) },
-    ]);
+    await deps.telegram.sendMessage(
+      turn.chatId,
+      buildPreviewText(candidateDraft, validation, readiness?.gstTreatment ?? null),
+      [
+        { text: 'Confirm', callbackData: buildCallbackData('confirm', saved.draftVersionId) },
+        { text: 'Cancel', callbackData: buildCallbackData('cancel', saved.draftVersionId) },
+      ],
+    );
     deps.auditLog.record({
       correlationId: turn.correlationId,
       type: 'preview.shown',
@@ -146,6 +190,13 @@ export async function handleIncomingTextMessage(
       actor,
       data: { draftVersionId: saved.draftVersionId },
     });
+    return;
+  }
+
+  if (readiness !== null && !readiness.ready && !isOnlyMissingPlaceOfSupply(readiness)) {
+    // A configuration problem — nothing the user types can fix this, so ask
+    // for nothing; report it plainly instead.
+    await deps.telegram.sendMessage(turn.chatId, buildConfigurationErrorText(readiness.blockers));
     return;
   }
 

@@ -16,6 +16,7 @@ export const MISSING_FIELD_NAMES = [
   'partyName',
   'items',
   'gstPercent',
+  'placeOfSupply',
 ] as const;
 export type MissingFieldName = (typeof MISSING_FIELD_NAMES)[number];
 
@@ -35,6 +36,14 @@ export interface TransactionDraft {
   readonly partyName: string | null;
   readonly items: readonly DraftLineItem[];
   readonly gstPercent: number | null;
+  /**
+   * The state named as the place of supply, exactly as the user wrote it —
+   * e.g. "Uttar Pradesh". Extracted only when the user explicitly stated one;
+   * never inferred from the party's name, address, or anything else. This
+   * field decides nothing by itself: whether that means CGST+SGST or IGST is
+   * a deterministic backend decision (src/gst/), never the model's.
+   */
+  readonly placeOfSupply: string | null;
   /** Which required fields the model could not find in the message. */
   readonly missingFields: readonly MissingFieldName[];
   /** Free-text note on ambiguity, e.g. two plausible customers mentioned. Never parsed. */
@@ -65,13 +74,22 @@ export const TRANSACTION_DRAFT_TOOL_SCHEMA = {
       },
     },
     gstPercent: { type: ['number', 'null'] },
+    placeOfSupply: { type: ['string', 'null'] },
     missingFields: {
       type: 'array',
       items: { type: 'string', enum: [...MISSING_FIELD_NAMES] },
     },
     ambiguityNote: { type: ['string', 'null'] },
   },
-  required: ['voucherType', 'partyName', 'items', 'gstPercent', 'missingFields', 'ambiguityNote'],
+  required: [
+    'voucherType',
+    'partyName',
+    'items',
+    'gstPercent',
+    'placeOfSupply',
+    'missingFields',
+    'ambiguityNote',
+  ],
   additionalProperties: false,
 } as const;
 
@@ -131,8 +149,16 @@ export function parseTransactionDraft(candidate: unknown): TransactionDraft {
     throw new DraftValidationError(['draft must be an object']);
   }
 
-  const { voucherType, partyName, items, gstPercent, missingFields, ambiguityNote, ...rest } =
-    candidate;
+  const {
+    voucherType,
+    partyName,
+    items,
+    gstPercent,
+    placeOfSupply,
+    missingFields,
+    ambiguityNote,
+    ...rest
+  } = candidate;
 
   const extra = Object.keys(rest);
   if (extra.length > 0) problems.push(`unexpected top-level fields: ${extra.join(', ')}`);
@@ -156,6 +182,10 @@ export function parseTransactionDraft(candidate: unknown): TransactionDraft {
 
   if (gstPercent !== null && typeof gstPercent !== 'number') {
     problems.push('gstPercent must be a number or null');
+  }
+
+  if (placeOfSupply !== null && (typeof placeOfSupply !== 'string' || placeOfSupply.trim() === '')) {
+    problems.push('placeOfSupply must be a non-empty string or null');
   }
 
   let parsedMissingFields: MissingFieldName[] = [];
@@ -184,6 +214,7 @@ export function parseTransactionDraft(candidate: unknown): TransactionDraft {
     partyName: partyName as string | null,
     items: parsedItems,
     gstPercent: gstPercent as number | null,
+    placeOfSupply: placeOfSupply as string | null,
     missingFields: parsedMissingFields,
     ambiguityNote: ambiguityNote as string | null,
   };

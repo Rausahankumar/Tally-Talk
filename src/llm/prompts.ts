@@ -14,7 +14,8 @@ Call the record_transaction_draft tool exactly once with your findings. Rules:
 - partyName: the customer or supplier name exactly as written by the user. null if not mentioned. Do not guess or normalise it — a later step matches it against real records.
 - items: one entry per distinct item mentioned, in the order mentioned. itemName exactly as the user wrote it. quantity and rate as plain numbers taken directly from the text (e.g. "100 bags at ₹500 each" -> quantity 100, rate 500) — null for a value not stated. Never compute a missing quantity or rate from other numbers in the message.
 - gstPercent: the GST rate as a plain number if the user stated one (e.g. "18% GST" -> 18), otherwise null. Never compute or assume a rate the user did not state.
-- missingFields: which of voucherType, partyName, items, gstPercent you could not determine from the message. Leave empty if everything was stated.
+- placeOfSupply: the state the user explicitly named as the place of supply (e.g. "place of supply Uttar Pradesh" -> "Uttar Pradesh"), exactly as written. null if the user did not explicitly state one. Never infer this from the party's name, address, city, or anything else — if the message does not name a place of supply in so many words, this is null, even if you could guess one. You never decide what this state means for tax purposes; a later step does that deterministically.
+- missingFields: which of voucherType, partyName, items, gstPercent, placeOfSupply you could not determine from the message. Leave empty if everything was stated.
 - ambiguityNote: a short plain-text note only if something in the message is genuinely ambiguous (e.g. two possible interpretations of a name or quantity). null otherwise. This field is for a human to read later — never parsed by other code.
 
 If the message contains no transaction at all, set voucherType to "unknown", items to an empty array, and list every field you could not find in missingFields.`;

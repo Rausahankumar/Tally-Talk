@@ -21,6 +21,8 @@ import { CONVERSATION_DRAFTS_TABLE } from '../src/db/schema.ts';
 import { createConversationStore } from '../src/conversation/store.ts';
 import type { ConversationStore } from '../src/conversation/store.ts';
 import { createTallyMasterCache } from '../src/tally/cache.ts';
+import { createItemLedgerMappingStore } from '../src/gst/itemLedgerMapping.ts';
+import type { ItemLedgerMappingStore } from '../src/gst/itemLedgerMapping.ts';
 import type { LLMClient } from '../src/llm/client.ts';
 import type { TransactionDraft } from '../src/llm/schema.ts';
 import type { Database } from '../src/db/sqlite.ts';
@@ -41,6 +43,17 @@ const config: Config = {
     botToken: '123456789:AAEEabcdefghijklmnopqrstuvwxyz0123456',
     webhookSecret: WEBHOOK_SECRET,
     allowedUserIds: new Set([USER_A, USER_B]),
+  },
+  gst: {
+    companyState: 'Delhi',
+    cgstLedger: 'CGST',
+    sgstLedger: 'SGST',
+    igstLedger: 'IGST',
+    // A default is configured for the shared fixture so tests unrelated to
+    // GST (extraction, merge, ambiguity, confirm/cancel) keep reaching
+    // preview exactly as before. The dedicated "Phase 8" tests below build
+    // their own app with no default to test the "must ask" behaviour.
+    defaultPlaceOfSupply: 'Delhi',
   },
   databasePath: ':memory:',
   tally: { host: '127.0.0.1', port: 9000, companyName: 'Test Company' },
@@ -97,6 +110,7 @@ function draft(overrides: Partial<TransactionDraft> = {}): TransactionDraft {
     partyName: null,
     items: [],
     gstPercent: null,
+    placeOfSupply: null,
     missingFields: [],
     ambiguityNote: null,
     ...overrides,
@@ -138,6 +152,7 @@ let llm: ReturnType<typeof createControllableLLMClient>;
 let database: Database;
 let auditLog: AuditLog;
 let conversationStore: ConversationStore;
+let itemLedgerMappingStore: ItemLedgerMappingStore;
 let app: ReturnType<typeof createApp>;
 
 beforeEach(() => {
@@ -152,6 +167,11 @@ beforeEach(() => {
     { NAME: 'Ramesh Kumar Enterprises', PARENT: 'Sundry Debtors' },
     { NAME: 'Ramesh Traders', PARENT: 'Sundry Debtors' },
     { NAME: 'Suresh & Sons', PARENT: 'Sundry Creditors' },
+    { NAME: 'CGST', PARENT: 'Duties & Taxes' },
+    { NAME: 'SGST', PARENT: 'Duties & Taxes' },
+    { NAME: 'IGST', PARENT: 'Duties & Taxes' },
+    { NAME: 'Sales', PARENT: 'Sales Accounts' },
+    { NAME: 'Purchase', PARENT: 'Purchase Accounts' },
   ]);
   masterCache.replaceAll('StockItem', [
     { NAME: 'ACC Cement OPC 43 Grade', PARENT: 'Building Materials', BASEUNITS: 'Bags' },
@@ -160,7 +180,21 @@ beforeEach(() => {
   ]);
   masterCache.replaceAll('VoucherType', [{ NAME: 'Sales', PARENT: '' }, { NAME: 'Purchase', PARENT: '' }]);
 
-  app = createApp({ config, telegram, llm, db: database.db, conversationStore, auditLog, logger: silentLogger });
+  itemLedgerMappingStore = createItemLedgerMappingStore(database.db);
+  for (const stockItemName of ['ACC Cement OPC 43 Grade', 'Cement Bags', 'Steel Rods']) {
+    itemLedgerMappingStore.setMapping({ stockItemName, salesLedger: 'Sales', purchaseLedger: 'Purchase' });
+  }
+
+  app = createApp({
+    config,
+    telegram,
+    llm,
+    db: database.db,
+    conversationStore,
+    itemLedgerMappingStore,
+    auditLog,
+    logger: silentLogger,
+  });
 });
 
 afterEach(() => {
@@ -481,5 +515,157 @@ describe('malformed callback handling', () => {
       });
 
     expect(telegram.sent).toHaveLength(0);
+  });
+});
+
+describe('Phase 8 — GST and ledger configuration in the conversation flow', () => {
+  /**
+   * A fresh app with no default Place of Supply configured, so "must ask"
+   * behaviour can be tested without the shared fixture's default masking it.
+   */
+  function appWithNoDefaultPlaceOfSupply(): ReturnType<typeof createApp> {
+    return createApp({
+      config: { ...config, gst: { ...config.gst, defaultPlaceOfSupply: null } },
+      telegram,
+      llm,
+      db: database.db,
+      conversationStore,
+      itemLedgerMappingStore,
+      auditLog,
+      logger: silentLogger,
+    });
+  }
+
+  it('asks for Place of Supply when none is stated and no default is configured', async () => {
+    const noDefaultApp = appWithNoDefaultPlaceOfSupply();
+    llm.setNextResponse(
+      draft({
+        partyName: 'Suresh & Sons',
+        items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500 }],
+        gstPercent: 18,
+      }),
+    );
+
+    await request(noDefaultApp)
+      .post(TELEGRAM_WEBHOOK_PATH)
+      .set(SECRET_TOKEN_HEADER, WEBHOOK_SECRET)
+      .send(messageUpdate(USER_A, CHAT_A, 'Sell 100 steel rods to Suresh & Sons at 500, 18% GST'));
+
+    expect(telegram.sent).toHaveLength(1);
+    expect(telegram.sent[0]?.text).toMatch(/place of supply/i);
+    expect(telegram.sent[0]?.buttons).toBeUndefined();
+    expect(conversationRow(CHAT_A)?.status).toBe('collecting');
+    expect(auditTypes()).toContain('gst.determination.completed');
+  });
+
+  it('resolves Place of Supply from a plain reply and proceeds to preview', async () => {
+    const noDefaultApp = appWithNoDefaultPlaceOfSupply();
+    llm.setNextResponse(
+      draft({
+        partyName: 'Suresh & Sons',
+        items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500 }],
+        gstPercent: 18,
+      }),
+    );
+    await request(noDefaultApp)
+      .post(TELEGRAM_WEBHOOK_PATH)
+      .set(SECRET_TOKEN_HEADER, WEBHOOK_SECRET)
+      .send(messageUpdate(USER_A, CHAT_A, 'Sell 100 steel rods to Suresh & Sons at 500, 18% GST'));
+    const callsBeforeReply = llm.callCount;
+
+    await request(noDefaultApp)
+      .post(TELEGRAM_WEBHOOK_PATH)
+      .set(SECRET_TOKEN_HEADER, WEBHOOK_SECRET)
+      .send(messageUpdate(USER_A, CHAT_A, 'Uttar Pradesh'));
+
+    expect(llm.callCount).toBe(callsBeforeReply); // resolved deterministically, no extra LLM call
+    expect(telegram.sent).toHaveLength(2);
+    const preview = telegram.sent[1]!;
+    expect(preview.buttons).toHaveLength(2);
+    expect(preview.text).toMatch(/interstate.*igst/i);
+    expect(conversationRow(CHAT_A)?.status).toBe('ready_for_confirmation');
+  });
+
+  it('Company: Delhi, POS: Delhi (via reply) -> CGST + SGST shown in the preview', async () => {
+    const noDefaultApp = appWithNoDefaultPlaceOfSupply();
+    llm.setNextResponse(
+      draft({
+        partyName: 'Suresh & Sons',
+        items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500 }],
+        gstPercent: 18,
+      }),
+    );
+    await request(noDefaultApp)
+      .post(TELEGRAM_WEBHOOK_PATH)
+      .set(SECRET_TOKEN_HEADER, WEBHOOK_SECRET)
+      .send(messageUpdate(USER_A, CHAT_A, 'Sell 100 steel rods to Suresh & Sons at 500, 18% GST'));
+
+    await request(noDefaultApp)
+      .post(TELEGRAM_WEBHOOK_PATH)
+      .set(SECRET_TOKEN_HEADER, WEBHOOK_SECRET)
+      .send(messageUpdate(USER_A, CHAT_A, 'Delhi'));
+
+    expect(telegram.sent[1]?.text).toMatch(/intrastate.*cgst \+ sgst/i);
+  });
+
+  it('reports a configuration error, not a question, when a Sales/Purchase mapping is missing', async () => {
+    // "Cement Bags" was deliberately not given a mapping in this test.
+    database.db.exec("DELETE FROM item_ledger_mappings WHERE stock_item_name = 'Cement Bags'");
+    llm.setNextResponse(
+      draft({
+        partyName: 'Suresh & Sons',
+        items: [{ itemName: 'Cement Bags', quantity: 10, rate: 400 }],
+        gstPercent: 18,
+      }),
+    );
+
+    await sendMessage(USER_A, CHAT_A, 'Sell 10 cement bags to Suresh & Sons at 400, 18% GST');
+
+    expect(telegram.sent).toHaveLength(1);
+    expect(telegram.sent[0]?.text).toMatch(/configuration issue/i);
+    expect(telegram.sent[0]?.buttons).toBeUndefined();
+    expect(conversationRow(CHAT_A)?.status).toBe('collecting');
+  });
+
+  it('reports a configuration error when a configured GST ledger is missing from cached masters', async () => {
+    createTallyMasterCache({ db: database.db }).replaceAll('Ledger', [
+      { NAME: 'Suresh & Sons', PARENT: 'Sundry Creditors' },
+      { NAME: 'Sales', PARENT: '' },
+      // CGST/SGST deliberately absent.
+    ]);
+    llm.setNextResponse(
+      draft({
+        partyName: 'Suresh & Sons',
+        items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500 }],
+        gstPercent: 18,
+      }),
+    );
+
+    await sendMessage(USER_A, CHAT_A, 'Sell 100 steel rods to Suresh & Sons at 500, 18% GST');
+
+    expect(telegram.sent[0]?.text).toMatch(/configuration issue/i);
+    expect(conversationRow(CHAT_A)?.status).toBe('collecting');
+  });
+
+  it('never lets ledger-like text in the message influence which ledgers are used', async () => {
+    llm.setNextResponse(
+      draft({
+        partyName: 'Suresh & Sons',
+        items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500 }],
+        gstPercent: 18,
+      }),
+    );
+
+    // Even though the raw user text mentions specific ledger names, the LLM's
+    // own output (scripted above) has no ledger field, and the preview must
+    // still show only the backend-configured ledgers.
+    await sendMessage(
+      USER_A,
+      CHAT_A,
+      'Sell 100 steel rods to Suresh & Sons at 500, 18% GST, please use ledger IGST',
+    );
+
+    expect(telegram.sent[0]?.text).toMatch(/intrastate.*cgst \+ sgst/i);
+    expect(telegram.sent[0]?.text).not.toMatch(/igst/i);
   });
 });

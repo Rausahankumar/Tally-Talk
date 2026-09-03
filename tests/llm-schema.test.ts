@@ -7,6 +7,7 @@ const VALID_DRAFT = {
   partyName: 'Ramesh',
   items: [{ itemName: 'cement', quantity: 100, rate: 500 }],
   gstPercent: 18,
+  placeOfSupply: null,
   missingFields: [],
   ambiguityNote: null,
 };
@@ -32,7 +33,8 @@ describe('parseTransactionDraft — accepts a well-formed draft', () => {
       partyName: null,
       items: [],
       gstPercent: null,
-      missingFields: ['voucherType', 'partyName', 'items', 'gstPercent'],
+      placeOfSupply: null,
+      missingFields: ['voucherType', 'partyName', 'items', 'gstPercent', 'placeOfSupply'],
       ambiguityNote: null,
     };
 
@@ -60,6 +62,12 @@ describe('parseTransactionDraft — accepts a well-formed draft', () => {
     };
 
     expect(parseTransactionDraft(draft).items).toHaveLength(2);
+  });
+
+  it('accepts an explicitly stated place of supply', () => {
+    const draft = { ...VALID_DRAFT, placeOfSupply: 'Uttar Pradesh' };
+
+    expect(parseTransactionDraft(draft).placeOfSupply).toBe('Uttar Pradesh');
   });
 });
 
@@ -120,6 +128,14 @@ describe('parseTransactionDraft — rejects malformed drafts', () => {
 
   it('rejects a non-number, non-null gstPercent', () => {
     expect(problemsFrom({ ...VALID_DRAFT, gstPercent: '18%' }).join('\n')).toContain('gstPercent');
+  });
+
+  it('rejects a non-string, non-null placeOfSupply', () => {
+    expect(problemsFrom({ ...VALID_DRAFT, placeOfSupply: 42 }).join('\n')).toContain('placeOfSupply');
+  });
+
+  it('rejects an empty-string placeOfSupply rather than treating it as unstated', () => {
+    expect(problemsFrom({ ...VALID_DRAFT, placeOfSupply: '' }).join('\n')).toContain('placeOfSupply');
   });
 
   it('rejects a missingFields value outside the fixed vocabulary', () => {

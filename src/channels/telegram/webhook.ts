@@ -26,6 +26,8 @@ import { Router } from 'express';
 import type { Request, Response } from 'express';
 
 import type { AuditLog } from '../../audit/log.ts';
+import type { GstLedgerConfig } from '../../config/index.ts';
+import type { ItemLedgerMappingStore } from '../../gst/itemLedgerMapping.ts';
 import type { Logger } from '../../logger.ts';
 import type { LLMClient } from '../../llm/client.ts';
 import type { ConversationStore } from '../../conversation/store.ts';
@@ -43,6 +45,8 @@ export interface TelegramWebhookDeps {
   readonly llm: LLMClient;
   readonly db: DatabaseSync;
   readonly conversationStore: ConversationStore;
+  readonly gstConfig: GstLedgerConfig;
+  readonly itemLedgerMappingStore: ItemLedgerMappingStore;
   readonly auditLog: AuditLog;
   readonly logger: Logger;
 }
@@ -143,6 +147,8 @@ export function createTelegramWebhookRouter(deps: TelegramWebhookDeps): Router {
             llm: deps.llm,
             telegram: deps.telegram,
             conversationStore: deps.conversationStore,
+            gstConfig: deps.gstConfig,
+            itemLedgerMappingStore: deps.itemLedgerMappingStore,
             auditLog: deps.auditLog,
           },
           { chatId: message.chatId, userId: message.userId, text: message.text, correlationId },

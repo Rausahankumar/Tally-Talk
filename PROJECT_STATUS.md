@@ -4,96 +4,95 @@ _Last updated: 2026-09-02_
 
 ## Current phase
 
-Phase 7 — Tally posting mechanism. **Posting mechanism complete and tested.
-Not yet wired to a real confirmed conversation draft** — blocked on a schema
-decision, reported below, awaiting approval.
+Phase 8 — Deterministic GST determination and application-side ledger mapping.
+**Complete.**
 
 ## Current task
 
-Awaiting your decision on the reported schema gap (see below) before wiring
-`postConfirmedTransaction` to the Phase 6 confirmation flow.
+None. Phase 7's remaining gap (see below) is smaller than before but not
+closed — awaiting direction on the two items still open.
 
 ## Completed work
 
-**Phases 0–6** — foundation through conversation flow with preview and
-Confirm/Cancel. See git history for detail.
+**Phases 0–7** — foundation through the Tally posting mechanism (not yet
+wired to a real confirmed draft). See git history for detail.
 
-**Phase 7 — Tally Posting Mechanism**
-- `src/tally/postingXml.ts` — `buildSalesVoucherXml` (deterministic, pure) and
-  `parseImportResponse`. The party-ledger sign convention (negative,
-  `ISDEEMEDPOSITIVE=Yes`) and every field name were confirmed against a real
-  Sales voucher captured during Phase 3 discovery, not assumed.
-- `src/tally/posting.ts` — `createTallyPostingClient` (HTTP Import, injectable
-  fetch, never throws — every failure resolves to an outcome), `createPostingStore`
-  (SQLite-backed, atomic duplicate/concurrency protection via a primary-key
-  `INSERT`), and `postConfirmedTransaction` (the orchestrator: confirms the
-  draft is actually `confirmed` in `conversation_drafts`, claims the posting
-  attempt exactly once, posts, records the outcome, audits every step).
-- Migration 5 adds `tally_postings`; migration 6 widens the audit vocabulary
-  for `tally.posting.rejected`.
-- **Phase 3's read-only client (`client.ts`, `xml.ts`, `masters.ts`,
-  `cache.ts`) is untouched** — confirmed by diff. Phase 4 and Phase 5 are also
-  untouched. No new HTTP route or endpoint exists anywhere for posting.
+**Phase 8 — GST and Ledger Configuration**
+- `src/gst/states.ts` — the 36 GST-registered Indian states/UTs, exact match
+  only (no fuzzy matching on state names — a near-miss here flips the GST
+  treatment entirely, not just a candidate list).
+- `src/gst/treatment.ts` — `determineGstTreatment`: Company State vs. Place of
+  Supply only, never the party's state, never guessed (`DECISIONS.md` #28).
+- `src/gst/itemLedgerMapping.ts` + migration 7 (`item_ledger_mappings`) —
+  application-side Sales/Purchase ledger mapping per stock item, exact-match
+  lookup only. Never reads or writes Tally masters.
+- `src/gst/ledgerExistence.ts` — exact-only existence check against the
+  cached `Ledger` masters (no fuzzy matching for a posting decision).
+- `src/gst/postingReadiness.ts` — `checkPostingReadiness`: the single function
+  combining all of the above, run after Phase 5 passes, producing a full
+  blocker list or a resolved `GstTreatment`.
+- `src/llm/schema.ts` / `prompts.ts` — `TransactionDraft.placeOfSupply` added:
+  extracted only when the user explicitly states one, never inferred. The
+  model decides nothing about what it means.
+- `src/conversation/` — a missing Place of Supply is asked for and resolved
+  from the next reply deterministically (exact state-name match, no LLM
+  call); any other readiness failure (missing/absent ledger mapping) is
+  reported as a configuration error, never a question. The preview now shows
+  the resolved GST treatment and ledgers.
+- `src/tally/posting.ts` — `postConfirmedTransaction` re-runs
+  `checkPostingReadiness` against the stored draft immediately before
+  building the voucher XML, closing the window between confirmation and
+  posting (`DECISIONS.md` #30). Migration 6 adds `gst.determination.completed`
+  to the audit vocabulary.
+- Not touched: Phase 3 read-only Tally client/masters/cache, Phase 4/5 logic
+  beyond the additive `placeOfSupply` field, existing Tally data of any kind.
 
-## ⚠️ Schema gap — reported per your instructions, awaiting your decision
+## ⚠️ Phase 7 gap — narrowed, not closed
 
-The existing `TransactionDraft` + `DraftValidationResult` do not carry enough
-information to safely build a *correct* real Tally voucher. Building anything
-further here would mean guessing at a live accounting system, which is exactly
-what was ruled out. Specifics:
+Phase 7 flagged three missing pieces to safely build a real voucher. Phase 8
+resolves two of them:
 
-| Missing | Why it's required | What would need to grow |
-|---|---|---|
-| **Sales ledger name** for each line's accounting allocation (e.g. "Sales", "GST Sales" — the real captured sample used a company-specific name, not a generic one) | Every inventory line in a Tally voucher must credit a specific income ledger; there is no way to infer which one from an item name alone | Either a new config default, or an extension to Phase 3's `StockItem` master fields |
-| **GST ledger names and the CGST+SGST vs. IGST split** | The split depends on whether the transaction is intra-state or inter-state, which depends on the party's registered state vs. the company's — neither is captured anywhere today. The one real sample found (`DECISIONS.md`) used a single "SGST" line with no CGST/IGST counterpart, so even the existing data doesn't reveal a reliable pattern | Party state and company state would need to be captured (Phase 3 `Ledger` fields, and/or config); the tax-ledger-name mapping itself is a business decision, not inferable |
-| **Godown/warehouse** | This specific company has godown tracking enabled (12 godowns synced in Phase 3) and real captured vouchers include a godown allocation per line; omitting it risks Tally rejecting the voucher outright | `TransactionDraft`/validation would need a godown field, or a fixed default godown decision |
+| Gap (Phase 7) | Status after Phase 8 |
+|---|---|
+| Sales/purchase ledger name per item | ✅ Resolved — `item_ledger_mappings` |
+| GST ledger names + intrastate/interstate split | ✅ Resolved — `src/gst/treatment.ts` |
+| Godown/warehouse | ❌ Still open — out of Phase 8's stated scope |
 
-**Not blocking** (handled inside Phase 7 without touching the schema):
-unit of measure (read from the already-cached `StockItem.BASEUNITS`), voucher
-date (defaults to posting time), voucher number (omitted — Tally auto-numbers).
-
-**Also flagged, not blocking:** Purchase vouchers are out of scope for now —
-no real captured Purchase sample exists to confirm its sign convention against
-(`DECISIONS.md` #27). Only Sales is implemented.
-
-**What I built instead of guessing:** `postConfirmedTransaction` takes a fully
-resolved `SalesVoucherInput` — the caller supplies the sales/tax ledger
-allocations explicitly. The entire posting mechanism (XML building, HTTP
-Import, response parsing, duplicate/concurrency protection, state, audit) is
-complete and tested against that contract. What remains is deciding how the
-missing fields above get sourced, then writing the (small) piece of code that
-turns a confirmed `TransactionDraft` into a `SalesVoucherInput` and calls
-`postConfirmedTransaction` — deliberately not done yet.
+**Also still open:** no adapter exists yet converting a confirmed
+`TransactionDraft` + `checkPostingReadiness` result into the `SalesVoucherInput`
+`postConfirmedTransaction` expects, and `postConfirmedTransaction` is still not
+called from the real confirm callback. Building that adapter is small, but
+deliberately not done in this phase — it wasn't asked for, and doing it without
+also deciding godown would still leave posting unusable for this company (which
+has godown tracking enabled).
 
 ## Work in progress
 
-None — waiting on your decision above before proceeding.
+None.
 
 ## Next task
 
-Once the ledger-mapping question is resolved: write the adapter from a
-confirmed `TransactionDraft` to `SalesVoucherInput`, wire it into
-`handleCallbackQuery`'s confirm path, and — only after that, and only with
-explicit approval — send the first real Tally Import request.
+Either: decide the godown question and build the draft→voucher adapter (closes
+Phase 7 fully), or proceed to Phase 9 (hardening) with posting still
+deliberately unwired.
 
 ## Known issues / blockers
 
-- **Blocking:** the schema gap above.
 - No GitHub remote and `gh` CLI is not installed — local commits only.
-- No rate limiting yet (Phase 8).
-- Purchase vouchers unimplemented (`DECISIONS.md` #27).
-- `parseImportResponse`'s response format is the standard, documented Tally
-  Import shape (`<RESPONSE><CREATED>/<ERRORS>/<LINEERROR>`) but has **not**
-  been confirmed against this specific TallyPrime instance — no real Import
-  request has been sent. This is exactly what the first approved, controlled
-  real Tally test is for.
+- Godown is not modelled anywhere in the schema (Phase 7's original gap,
+  unchanged).
+- **`.env.example` currently contains what appear to be real Telegram
+  credentials** (a bot token, webhook secret, and user ID) rather than
+  placeholders. This file is committed to the repository as a template — if
+  these are genuine, committing them would leak a live credential into git
+  history. Left untouched pending your confirmation; flagged prominently in
+  this phase's completion report.
+- Purchase vouchers remain unimplemented (`DECISIONS.md` #27, unchanged).
 
 ## Last important technical decision
 
-Duplicate and concurrent posting protection is a single primary-key `INSERT`
-on `tally_postings.draft_version_id` — whichever caller's insert wins proceeds,
-every other caller (duplicate callback, concurrent request, blind retry) gets
-the existing row back. Once a row exists at all, no second attempt is ever
-made for that draft version, even if it ended in `failed` or `uncertain` —
-because a local failure does not prove Tally never processed the request, and
-automatic retry risks a real duplicate voucher. `DECISIONS.md` #25.
+GST treatment compares only `COMPANY_STATE` against a transaction's Place of
+Supply — never the party's registered state, which `TransactionDraft` does not
+even carry a field for. A party can receive goods at a different location than
+where it's registered; assuming otherwise silently produces the wrong
+CGST+SGST/IGST split. `DECISIONS.md` #28.

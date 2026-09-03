@@ -14,6 +14,7 @@ import { TELEGRAM_WEBHOOK_PATH, createApp } from './app.ts';
 import { createAuditLog } from './audit/log.ts';
 import { createConversationStore } from './conversation/store.ts';
 import { openDatabase } from './db/sqlite.ts';
+import { createItemLedgerMappingStore } from './gst/itemLedgerMapping.ts';
 import { createAnthropicClient } from './llm/client.ts';
 import { createTelegramClient } from './channels/telegram/client.ts';
 import { consoleLogger } from './logger.ts';
@@ -67,6 +68,7 @@ function main(): void {
     llm: createAnthropicClient({ apiKey: config.llm.apiKey, model: config.llm.model }),
     db: database.db,
     conversationStore: createConversationStore(database.db),
+    itemLedgerMappingStore: createItemLedgerMappingStore(database.db),
     auditLog: createAuditLog({ db: database.db, logger: consoleLogger }),
     logger: consoleLogger,
   });

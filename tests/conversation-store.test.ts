@@ -12,6 +12,7 @@ const FAKE_DRAFT: TransactionDraft = {
   partyName: 'Ramesh',
   items: [],
   gstPercent: 18,
+  placeOfSupply: null,
   missingFields: [],
   ambiguityNote: null,
 };

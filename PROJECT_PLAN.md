@@ -100,6 +100,8 @@ is only emitted by the phase that owns it:
 | `user.confirmed` / `user.cancelled` | Phase 6 |
 | `confirmation.rejected` | Phase 6 |
 | `tally.request.sent` / `tally.response.received` | Phase 7 |
+| `tally.posting.rejected` | Phase 7 |
+| `gst.determination.completed` | Phase 8 |
 
 ## Security requirements
 
@@ -133,8 +135,9 @@ small/cheap model behind a swappable interface; prompt caching where supported.
 | 4 | LLM module: structured extraction schema and single-call extraction | ✅ Complete |
 | 5 | Validation + fuzzy matching + GST rate validity check | ✅ Complete |
 | 6 | Conversation state, multi-turn slot filling, preview, Confirm/Cancel | ✅ Complete |
-| 7 | Idempotent Sales Invoice posting to Tally | 🟡 Posting mechanism complete; wiring to a real confirmed draft blocked on a ledger-mapping decision (see PROJECT_STATUS.md) |
-| 8 | Hardening: rate limiting, Tally failure handling, retries | Planned |
+| 7 | Idempotent Sales Invoice posting to Tally | 🟡 Posting mechanism complete; GST/ledger mapping now resolved by Phase 8 — remaining gap is godown and the draft→voucher adapter (see PROJECT_STATUS.md) |
+| 8 | Deterministic GST determination and application-side ledger mapping | ✅ Complete |
+| 9 | Hardening: rate limiting, Tally failure handling, retries | Planned |
 
 Phase boundaries may be adjusted as work proceeds; each phase requires explicit
 user approval before it starts.

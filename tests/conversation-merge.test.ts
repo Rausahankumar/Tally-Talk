@@ -9,6 +9,7 @@ function draft(overrides: Partial<TransactionDraft> = {}): TransactionDraft {
     partyName: null,
     items: [],
     gstPercent: null,
+    placeOfSupply: null,
     missingFields: [],
     ambiguityNote: null,
     ...overrides,

@@ -21,7 +21,8 @@ export type ConversationStatus = (typeof CONVERSATION_STATUSES)[number];
 /** Which single ambiguous field the next message is expected to resolve. */
 export type PendingClarification =
   | { readonly kind: 'party'; readonly candidates: readonly string[] }
-  | { readonly kind: 'item'; readonly itemIndex: number; readonly candidates: readonly string[] };
+  | { readonly kind: 'item'; readonly itemIndex: number; readonly candidates: readonly string[] }
+  | { readonly kind: 'place_of_supply' };
 
 export interface ConversationDraftRow {
   readonly chatId: number;

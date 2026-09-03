@@ -20,7 +20,12 @@ import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 
 import type { AuditLog } from '../audit/log.ts';
+import type { GstLedgerConfig } from '../config/index.ts';
 import { CONVERSATION_DRAFTS_TABLE, TALLY_POSTINGS_TABLE } from '../db/schema.ts';
+import { checkPostingReadiness } from '../gst/postingReadiness.ts';
+import type { ItemLedgerMappingStore } from '../gst/itemLedgerMapping.ts';
+import type { TransactionDraft } from '../llm/schema.ts';
+import type { DraftValidationResult } from '../validation/types.ts';
 import { buildSalesVoucherXml, parseImportResponse } from './postingXml.ts';
 import type { SalesVoucherInput } from './postingXml.ts';
 
@@ -232,10 +237,12 @@ export function createPostingStore(db: DatabaseSync): PostingStore {
 // ---------------------------------------------------------------------------
 
 /** A posting attempt was refused before ever contacting Tally. */
-export class PostingRejectedError extends Error {
-  readonly reason: 'not_confirmed' | 'already_attempted';
+export type PostingRejectionReason = 'not_confirmed' | 'already_attempted' | 'gst_or_ledger_not_ready';
 
-  constructor(reason: 'not_confirmed' | 'already_attempted', message: string) {
+export class PostingRejectedError extends Error {
+  readonly reason: PostingRejectionReason;
+
+  constructor(reason: PostingRejectionReason, message: string) {
     super(message);
     this.name = 'PostingRejectedError';
     this.reason = reason;
@@ -247,6 +254,8 @@ export interface PostConfirmedTransactionDeps {
   readonly postingStore: PostingStore;
   readonly postingClient: TallyPostingClient;
   readonly auditLog: AuditLog;
+  readonly gstConfig: GstLedgerConfig;
+  readonly itemLedgerMappingStore: ItemLedgerMappingStore;
 }
 
 export interface PostConfirmedTransactionInput {
@@ -273,18 +282,33 @@ interface ConfirmationContext {
   readonly chatId: number;
   readonly telegramUserId: number;
   readonly status: string;
+  readonly draft: TransactionDraft;
+  readonly validation: DraftValidationResult;
 }
 
 function findConfirmationContext(db: DatabaseSync, draftVersionId: string): ConfirmationContext | null {
   const row = db
     .prepare(
-      `SELECT chat_id, telegram_user_id, status FROM ${CONVERSATION_DRAFTS_TABLE} WHERE draft_version_id = ?`,
+      `SELECT chat_id, telegram_user_id, status, draft_json, validation_json FROM ${CONVERSATION_DRAFTS_TABLE} WHERE draft_version_id = ?`,
     )
-    .get(draftVersionId) as { chat_id: number; telegram_user_id: number; status: string } | undefined;
+    .get(draftVersionId) as
+    | {
+        chat_id: number;
+        telegram_user_id: number;
+        status: string;
+        draft_json: string;
+        validation_json: string;
+      }
+    | undefined;
 
-  return row === undefined
-    ? null
-    : { chatId: row.chat_id, telegramUserId: row.telegram_user_id, status: row.status };
+  if (row === undefined) return null;
+  return {
+    chatId: row.chat_id,
+    telegramUserId: row.telegram_user_id,
+    status: row.status,
+    draft: JSON.parse(row.draft_json) as TransactionDraft,
+    validation: JSON.parse(row.validation_json) as DraftValidationResult,
+  };
 }
 
 /**
@@ -320,6 +344,34 @@ export async function postConfirmedTransaction(
     throw new PostingRejectedError(
       'not_confirmed',
       'This transaction has not been confirmed and cannot be posted to Tally.',
+    );
+  }
+
+  // Re-checked fresh here, never trusted from whatever state the conversation
+  // layer computed earlier: a configured ledger could have been renamed or
+  // deleted in Tally, or the mapping changed, between confirmation and this
+  // call. GST/ledger selection is never taken from `input.voucher` blindly —
+  // it must still agree with what backend configuration says is correct now.
+  const readiness = checkPostingReadiness(
+    { db: deps.db, gstConfig: deps.gstConfig, itemLedgerMappingStore: deps.itemLedgerMappingStore },
+    context.draft,
+    context.validation,
+  );
+  if (!readiness.ready) {
+    deps.auditLog.record({
+      correlationId,
+      type: 'tally.posting.rejected',
+      channel: 'system',
+      actor,
+      data: {
+        draftVersionId: input.draftVersionId,
+        reason: 'gst_or_ledger_not_ready',
+        blockerCodes: readiness.blockers.map((blocker) => blocker.code),
+      },
+    });
+    throw new PostingRejectedError(
+      'gst_or_ledger_not_ready',
+      'This transaction is not ready to post: GST or ledger configuration is incomplete or invalid.',
     );
   }
 

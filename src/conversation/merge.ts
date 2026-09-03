@@ -23,6 +23,7 @@ export function mergeDraft(existing: TransactionDraft, incoming: TransactionDraf
     // the natural way a user corrects them ("actually 200 bags, not 100").
     items: incoming.items.length > 0 ? incoming.items : existing.items,
     gstPercent: incoming.gstPercent ?? existing.gstPercent,
+    placeOfSupply: incoming.placeOfSupply ?? existing.placeOfSupply,
     missingFields: incoming.missingFields,
     ambiguityNote: incoming.ambiguityNote,
   };

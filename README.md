@@ -16,14 +16,17 @@ causes a write on its own.
 Phase 6 (Telegram → extraction → validation → preview → Confirm/Cancel) is
 complete and wired end to end. Phase 7 adds a fully built and tested Tally
 **posting mechanism** (`src/tally/posting.ts`) — deterministic voucher XML,
-HTTP Import, response parsing, exactly-once duplicate/concurrency protection —
-but it is **not yet wired to a real confirmed draft**: the existing extraction
-and validation data model doesn't yet carry the sales/GST ledger and godown
-information a real voucher needs, and this project does not guess at what
-posts to a real accounting system. See `PROJECT_STATUS.md` for the exact gap
-and what's needed to close it. **No transaction has ever been posted to Tally
-by this project.** A separate, manual command syncs and caches TallyPrime
-master data read-only. See `PROJECT_STATUS.md`.
+HTTP Import, response parsing, exactly-once duplicate/concurrency protection.
+Phase 8 adds deterministic **GST determination** (Company State vs. Place of
+Supply — never the party's state) and **application-side Sales/Purchase ledger
+mapping** (`src/gst/`), both backend-controlled and both validated against the
+cached Tally masters before a transaction can reach confirmation. The LLM may
+extract a stated Place of Supply; it never chooses a ledger or decides GST
+treatment. Posting is still **not wired to a real confirmed draft** — godown
+handling remains unresolved, and this project does not guess at what posts to
+a real accounting system. **No transaction has ever been posted to Tally by
+this project.** A separate, manual command syncs and caches TallyPrime master
+data read-only. See `PROJECT_STATUS.md`.
 
 ## Requirements
 

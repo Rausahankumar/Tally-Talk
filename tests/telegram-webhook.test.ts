@@ -13,6 +13,7 @@ import type { ConversationStore } from '../src/conversation/store.ts';
 import type { LLMClient } from '../src/llm/client.ts';
 import type { TransactionDraft } from '../src/llm/schema.ts';
 import type { Database } from '../src/db/sqlite.ts';
+import { createItemLedgerMappingStore } from '../src/gst/itemLedgerMapping.ts';
 import { createTestDatabase } from './helpers/testDatabase.ts';
 
 /** A draft that extracts to "nothing usable" — deterministic, no real LLM call. */
@@ -21,7 +22,8 @@ const UNKNOWN_DRAFT: TransactionDraft = {
   partyName: null,
   items: [],
   gstPercent: null,
-  missingFields: ['voucherType', 'partyName', 'items', 'gstPercent'],
+  placeOfSupply: null,
+  missingFields: ['voucherType', 'partyName', 'items', 'gstPercent', 'placeOfSupply'],
   ambiguityNote: null,
 };
 
@@ -66,6 +68,7 @@ const config: Config = {
   databasePath: ':memory:',
   tally: { host: '127.0.0.1', port: 9000, companyName: 'Test Company' },
   llm: { provider: 'anthropic', apiKey: 'test-api-key', model: 'claude-sonnet-5' },
+  gst: { companyState: 'Delhi', cgstLedger: 'CGST', sgstLedger: 'SGST', igstLedger: 'IGST', defaultPlaceOfSupply: null },
 };
 
 function messageUpdate(userId: number, text: string): object {
@@ -97,6 +100,7 @@ beforeEach(() => {
     llm: createFakeLLMClient(),
     db: database.db,
     conversationStore,
+    itemLedgerMappingStore: createItemLedgerMappingStore(database.db),
     auditLog,
     logger: silentLogger,
   });

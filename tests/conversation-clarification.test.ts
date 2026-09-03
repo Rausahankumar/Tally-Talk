@@ -98,6 +98,7 @@ describe('applyClarification', () => {
       partyName: 'Ramesh',
       items: [{ itemName: 'cement', quantity: 1, rate: 1 }],
       gstPercent: 18,
+      placeOfSupply: null,
       missingFields: [],
       ambiguityNote: null,
       ...overrides,

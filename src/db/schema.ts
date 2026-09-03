@@ -15,6 +15,7 @@ export const AUDIT_EVENTS_TABLE = 'audit_events';
 export const TALLY_MASTERS_TABLE = 'tally_masters';
 export const CONVERSATION_DRAFTS_TABLE = 'conversation_drafts';
 export const TALLY_POSTINGS_TABLE = 'tally_postings';
+export const ITEM_LEDGER_MAPPINGS_TABLE = 'item_ledger_mappings';
 
 /** Render a string list as a SQL `IN (...)` value list. */
 function sqlList(values: readonly string[]): string {
@@ -257,6 +258,73 @@ BEGIN
 END;
 `;
 
+/**
+ * Migration 7 — application-side Sales/Purchase ledger mapping per stock
+ * item. This never touches Tally: it is purely local configuration saying
+ * "when this stock item is sold, credit this ledger". `stock_item_name` is
+ * expected to be the exact resolved Tally master name (from Phase 5
+ * matching), so a lookup is a plain, exact key comparison — never fuzzy.
+ */
+const MIGRATION_7 = `
+CREATE TABLE ${ITEM_LEDGER_MAPPINGS_TABLE} (
+  stock_item_name  TEXT PRIMARY KEY,
+  sales_ledger     TEXT NOT NULL,
+  purchase_ledger  TEXT NOT NULL,
+  updated_at       TEXT NOT NULL
+);
+`;
+
+/**
+ * Migration 8 — widen `audit_events.type` for `gst.determination.completed`,
+ * so every automatic GST/ledger decision is auditable, per Phase 8's
+ * requirement. Same recreate-table technique as migrations 3 and 6
+ * (DECISIONS.md #24).
+ */
+const MIGRATION_8 = `
+DROP TRIGGER ${AUDIT_EVENTS_TABLE}_no_update;
+DROP TRIGGER ${AUDIT_EVENTS_TABLE}_no_delete;
+ALTER TABLE ${AUDIT_EVENTS_TABLE} RENAME TO ${AUDIT_EVENTS_TABLE}_v3;
+
+CREATE TABLE ${AUDIT_EVENTS_TABLE} (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  schema_version   INTEGER NOT NULL,
+  correlation_id   TEXT    NOT NULL,
+  occurred_at      TEXT    NOT NULL,
+  type             TEXT    NOT NULL CHECK (type IN (${sqlList(AUDIT_EVENT_TYPES)})),
+  channel          TEXT    NOT NULL CHECK (channel IN (${sqlList(AUDIT_CHANNELS)})),
+  actor_kind       TEXT    NOT NULL CHECK (actor_kind IN (${sqlList(AUDIT_ACTOR_KINDS)})),
+  telegram_user_id INTEGER,
+  chat_id          INTEGER,
+  data             TEXT    NOT NULL CHECK (json_valid(data))
+);
+
+INSERT INTO ${AUDIT_EVENTS_TABLE}
+  SELECT * FROM ${AUDIT_EVENTS_TABLE}_v3;
+
+DROP TABLE ${AUDIT_EVENTS_TABLE}_v3;
+
+CREATE INDEX idx_audit_events_correlation
+  ON ${AUDIT_EVENTS_TABLE} (correlation_id, occurred_at);
+
+CREATE INDEX idx_audit_events_occurred_at
+  ON ${AUDIT_EVENTS_TABLE} (occurred_at DESC);
+
+CREATE INDEX idx_audit_events_user
+  ON ${AUDIT_EVENTS_TABLE} (telegram_user_id, occurred_at DESC);
+
+CREATE TRIGGER ${AUDIT_EVENTS_TABLE}_no_update
+BEFORE UPDATE ON ${AUDIT_EVENTS_TABLE}
+BEGIN
+  SELECT RAISE(ABORT, 'audit_events is append-only: updates are not permitted');
+END;
+
+CREATE TRIGGER ${AUDIT_EVENTS_TABLE}_no_delete
+BEFORE DELETE ON ${AUDIT_EVENTS_TABLE}
+BEGIN
+  SELECT RAISE(ABORT, 'audit_events is append-only: deletes are not permitted');
+END;
+`;
+
 /** Ordered migrations. Append to this list; never edit an applied entry. */
 const MIGRATIONS: readonly string[] = [
   MIGRATION_1,
@@ -265,6 +333,8 @@ const MIGRATIONS: readonly string[] = [
   MIGRATION_4,
   MIGRATION_5,
   MIGRATION_6,
+  MIGRATION_7,
+  MIGRATION_8,
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.length;
