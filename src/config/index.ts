@@ -39,6 +39,14 @@ export interface LLMConfig {
   readonly provider: 'anthropic';
   readonly apiKey: string;
   readonly model: string;
+  /**
+   * Only needed for an identity-linked Anthropic API key, which the API
+   * refuses without knowing which workspace the request acts in. `null` for a
+   * normal workspace key — the header is then omitted entirely rather than
+   * sent empty. Like the API key, this is never logged or included in an
+   * error message.
+   */
+  readonly workspaceId: string | null;
 }
 
 /**
@@ -200,8 +208,11 @@ function parseLLM(env: NodeJS.ProcessEnv, problems: string[]): LLMConfig {
 
   const apiKey = readRequired(env, 'LLM_API_KEY', problems) ?? '';
   const model = env.LLM_MODEL?.trim() || DEFAULT_LLM_MODEL;
+  // Optional: only an identity-linked key needs it, so an unset or blank
+  // value is a normal configuration, not a problem to report.
+  const workspaceId = env.ANTHROPIC_WORKSPACE_ID?.trim() || null;
 
-  return { provider: 'anthropic', apiKey, model };
+  return { provider: 'anthropic', apiKey, model, workspaceId };
 }
 
 function parseGst(env: NodeJS.ProcessEnv, problems: string[]): GstLedgerConfig {

@@ -69,6 +69,74 @@ describe('createAnthropicClient request shape', () => {
     expect(payload.system.length).toBeGreaterThan(0);
   });
 
+  it('omits the anthropic-workspace-id header entirely when no workspace id is configured', async () => {
+    const fetchImpl = fakeFetch(200, anthropicToolResponse(VALID_DRAFT_INPUT));
+    const client = createAnthropicClient({
+      apiKey: 'sk-ant-test-key-not-real',
+      model: 'claude-sonnet-5',
+      fetchImpl,
+    });
+
+    await client.extractTransactionDraft('anything');
+
+    const [, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+    const headers = init.headers as Record<string, string>;
+    // Not present at all — not sent blank, which the API rejects the same way.
+    expect(Object.keys(headers)).not.toContain('anthropic-workspace-id');
+  });
+
+  it('sends anthropic-workspace-id when a workspace id is configured, leaving other headers unchanged', async () => {
+    const fetchImpl = fakeFetch(200, anthropicToolResponse(VALID_DRAFT_INPUT));
+    const client = createAnthropicClient({
+      apiKey: 'sk-ant-test-key-not-real',
+      model: 'claude-sonnet-5',
+      workspaceId: 'wrkspc_test123',
+      fetchImpl,
+    });
+
+    await client.extractTransactionDraft('anything');
+
+    const [, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+    const headers = init.headers as Record<string, string>;
+    expect(headers['anthropic-workspace-id']).toBe('wrkspc_test123');
+    expect(headers['x-api-key']).toBe('sk-ant-test-key-not-real');
+    expect(headers['anthropic-version']).toBe('2023-06-01');
+    expect(headers['content-type']).toBe('application/json');
+  });
+
+  it('treats a blank workspace id as unset rather than sending an empty header', async () => {
+    const fetchImpl = fakeFetch(200, anthropicToolResponse(VALID_DRAFT_INPUT));
+    const client = createAnthropicClient({
+      apiKey: 'sk-ant-test-key-not-real',
+      model: 'claude-sonnet-5',
+      workspaceId: '   ',
+      fetchImpl,
+    });
+
+    await client.extractTransactionDraft('anything');
+
+    const [, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+    expect(Object.keys(init.headers as Record<string, string>)).not.toContain('anthropic-workspace-id');
+  });
+
+  it('extracts the same draft whether or not a workspace id is configured', async () => {
+    const withoutWorkspace = await createAnthropicClient({
+      apiKey: 'test',
+      model: 'claude-sonnet-5',
+      fetchImpl: fakeFetch(200, anthropicToolResponse(VALID_DRAFT_INPUT)),
+    }).extractTransactionDraft('Sell 100 cement bags to Ramesh');
+
+    const withWorkspace = await createAnthropicClient({
+      apiKey: 'test',
+      model: 'claude-sonnet-5',
+      workspaceId: 'wrkspc_test123',
+      fetchImpl: fakeFetch(200, anthropicToolResponse(VALID_DRAFT_INPUT)),
+    }).extractTransactionDraft('Sell 100 cement bags to Ramesh');
+
+    expect(withWorkspace).toEqual(withoutWorkspace);
+    expect(withWorkspace).toEqual(VALID_DRAFT_INPUT);
+  });
+
   it('never calls the real Anthropic API - a live key would still hit the injected fetch only', async () => {
     const fetchImpl = fakeFetch(200, anthropicToolResponse(VALID_DRAFT_INPUT));
     const client = createAnthropicClient({ apiKey: 'unused', model: 'claude-sonnet-5', fetchImpl });

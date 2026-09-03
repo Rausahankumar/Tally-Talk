@@ -51,6 +51,13 @@ export interface LLMClient {
 export interface AnthropicClientOptions {
   readonly apiKey: string;
   readonly model: string;
+  /**
+   * Sent as `anthropic-workspace-id`, and only when set: an identity-linked
+   * API key is rejected without it, while a normal workspace key needs no
+   * such header at all. Never logged, and never included in an error, for
+   * the same reason as the API key itself.
+   */
+  readonly workspaceId?: string | null;
   readonly fetchImpl?: FetchLike;
   readonly timeoutMs?: number;
 }
@@ -77,6 +84,16 @@ function isToolUseBlock(block: unknown): block is AnthropicToolUseBlock {
 export function createAnthropicClient(options: AnthropicClientOptions): LLMClient {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const workspaceId = options.workspaceId?.trim() || null;
+
+  const headers: Record<string, string> = {
+    'content-type': 'application/json',
+    'x-api-key': options.apiKey,
+    'anthropic-version': ANTHROPIC_VERSION,
+    // Omitted entirely when unset — an empty header value is rejected just
+    // as a missing one is, so there is no "send it blank" middle ground.
+    ...(workspaceId !== null ? { 'anthropic-workspace-id': workspaceId } : {}),
+  };
 
   return {
     async extractTransactionDraft(message: string): Promise<TransactionDraft> {
@@ -87,11 +104,7 @@ export function createAnthropicClient(options: AnthropicClientOptions): LLMClien
       try {
         response = await fetchImpl(ANTHROPIC_API_URL, {
           method: 'POST',
-          headers: {
-            'content-type': 'application/json',
-            'x-api-key': options.apiKey,
-            'anthropic-version': ANTHROPIC_VERSION,
-          },
+          headers,
           body: JSON.stringify({
             model: options.model,
             max_tokens: DEFAULT_MAX_TOKENS,

@@ -67,7 +67,11 @@ function main(): void {
   const app = createApp({
     config,
     telegram: createTelegramClient(config.telegram.botToken),
-    llm: createAnthropicClient({ apiKey: config.llm.apiKey, model: config.llm.model }),
+    llm: createAnthropicClient({
+      apiKey: config.llm.apiKey,
+      model: config.llm.model,
+      workspaceId: config.llm.workspaceId,
+    }),
     db: database.db,
     conversationStore: createConversationStore(database.db),
     itemLedgerMappingStore: createItemLedgerMappingStore(database.db),

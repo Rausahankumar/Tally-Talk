@@ -171,6 +171,22 @@ describe('loadConfig', () => {
     expect(loadConfig(validEnv({ LLM_MODEL: 'claude-opus-5' })).llm.model).toBe('claude-opus-5');
   });
 
+  it('defaults to no Anthropic workspace id when unset', () => {
+    expect(loadConfig(validEnv()).llm.workspaceId).toBeNull();
+  });
+
+  it('reads an explicitly configured ANTHROPIC_WORKSPACE_ID', () => {
+    expect(loadConfig(validEnv({ ANTHROPIC_WORKSPACE_ID: 'wrkspc_test123' })).llm.workspaceId).toBe(
+      'wrkspc_test123',
+    );
+  });
+
+  it('treats a whitespace-only ANTHROPIC_WORKSPACE_ID as unset rather than a problem', () => {
+    // Optional: an identity-linked key needs it, a normal workspace key does
+    // not, so a blank value must not fail startup.
+    expect(loadConfig(validEnv({ ANTHROPIC_WORKSPACE_ID: '   ' })).llm.workspaceId).toBeNull();
+  });
+
   it('requires an LLM API key', () => {
     expect(problemsFrom(validEnv({ LLM_API_KEY: '' })).join('\n')).toContain(
       'LLM_API_KEY is required',
