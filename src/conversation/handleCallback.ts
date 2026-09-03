@@ -8,16 +8,40 @@
  * draft, a second tap, an expired draft, someone else's chat) is rejected the
  * same way and audited with the specific reason.
  *
- * Confirming only records that the user approved the draft. It does not call
- * Tally — that is a later phase's job.
+ * Cancel only records that the user discarded the draft. Confirm goes
+ * further: once the atomic status transition to `confirmed` succeeds (the
+ * same duplicate/race protection above, so this section runs at most once
+ * per draft version), it drives the whole posting pipeline —
+ *   confirmed draft -> checkPostingReadiness -> buildSalesVoucherInput -> postConfirmedTransaction
+ * — deterministically and with no LLM call. Every stage fails closed: a
+ * problem at any point reports to the user and stops before Tally is ever
+ * contacted, except `postConfirmedTransaction` itself, which re-checks
+ * readiness once more immediately before sending anything (closing the
+ * window between this check and the actual write) and is idempotent per
+ * draft version (its own primary-key claim on `draftVersionId`) — so even a
+ * retried or redelivered Confirm callback that somehow reached this far a
+ * second time cannot post twice.
  */
+
+import type { DatabaseSync } from 'node:sqlite';
 
 import type { AuditLog } from '../audit/log.ts';
 import type { ConfirmationAction } from '../channels/telegram/types.ts';
 import type { TelegramClient } from '../channels/telegram/client.ts';
+import type { GodownConfig, GstLedgerConfig } from '../config/index.ts';
+import { checkPostingReadiness } from '../gst/postingReadiness.ts';
+import type { ItemLedgerMappingStore } from '../gst/itemLedgerMapping.ts';
+import type { TransactionDraft } from '../llm/schema.ts';
+import { buildSalesVoucherInput } from '../tally/draftToVoucher.ts';
+import { PostingRejectedError, postConfirmedTransaction } from '../tally/posting.ts';
+import type { PostingStore, TallyPostingClient } from '../tally/posting.ts';
+import type { StockAvailabilityStore } from '../tally/stockAvailability.ts';
+import type { DraftValidationResult } from '../validation/types.ts';
 import {
   buildCancelledText,
   buildConfirmedText,
+  buildPostedResultText,
+  buildPostingFailedText,
   buildRejectedConfirmationText,
 } from './messages.ts';
 import type { ConversationStore } from './store.ts';
@@ -26,6 +50,14 @@ export interface CallbackHandlerDeps {
   readonly telegram: TelegramClient;
   readonly conversationStore: ConversationStore;
   readonly auditLog: AuditLog;
+  readonly db: DatabaseSync;
+  readonly gstConfig: GstLedgerConfig;
+  readonly itemLedgerMappingStore: ItemLedgerMappingStore;
+  readonly godownConfig: GodownConfig;
+  readonly stockAvailabilityStore: StockAvailabilityStore;
+  readonly companyName: string;
+  readonly postingStore: PostingStore;
+  readonly postingClient: TallyPostingClient;
 }
 
 export interface IncomingCallbackTurn {
@@ -51,6 +83,104 @@ async function reject(
   });
   await deps.telegram.answerCallbackQuery(turn.callbackQueryId, 'No longer valid');
   await deps.telegram.sendMessage(turn.chatId, buildRejectedConfirmationText());
+}
+
+/**
+ * Attempt the actual posting pipeline for an already-confirmed draft.
+ * Never throws for an expected failure mode — every stage reports to the
+ * user and returns instead. Only called once per draft version, from the
+ * confirm branch below, after the atomic status transition has already
+ * succeeded.
+ */
+async function postConfirmedDraft(
+  deps: CallbackHandlerDeps,
+  turn: IncomingCallbackTurn,
+  draft: TransactionDraft,
+  validation: DraftValidationResult,
+): Promise<void> {
+  const actor = { kind: 'user' as const, telegramUserId: turn.userId, chatId: turn.chatId };
+
+  const readiness = checkPostingReadiness(
+    {
+      db: deps.db,
+      gstConfig: deps.gstConfig,
+      itemLedgerMappingStore: deps.itemLedgerMappingStore,
+      godownConfig: deps.godownConfig,
+      stockAvailabilityStore: deps.stockAvailabilityStore,
+    },
+    draft,
+    validation,
+  );
+
+  if (!readiness.ready) {
+    deps.auditLog.record({
+      correlationId: turn.correlationId,
+      type: 'tally.posting.rejected',
+      channel: 'telegram',
+      actor,
+      data: {
+        draftVersionId: turn.draftVersionId,
+        reason: 'not_ready_at_confirm',
+        blockerCodes: readiness.blockers.map((b) => b.code),
+      },
+    });
+    await deps.telegram.sendMessage(
+      turn.chatId,
+      buildPostingFailedText(readiness.blockers.map((b) => b.message)),
+    );
+    return;
+  }
+
+  const adapterResult = buildSalesVoucherInput(
+    { db: deps.db, companyName: deps.companyName },
+    draft,
+    validation,
+    readiness,
+  );
+
+  if (!adapterResult.ok) {
+    deps.auditLog.record({
+      correlationId: turn.correlationId,
+      type: 'tally.posting.rejected',
+      channel: 'telegram',
+      actor,
+      data: { draftVersionId: turn.draftVersionId, reason: 'adapter_failed', reasons: adapterResult.reasons },
+    });
+    await deps.telegram.sendMessage(turn.chatId, buildPostingFailedText(adapterResult.reasons));
+    return;
+  }
+
+  try {
+    const result = await postConfirmedTransaction(
+      {
+        db: deps.db,
+        postingStore: deps.postingStore,
+        postingClient: deps.postingClient,
+        auditLog: deps.auditLog,
+        gstConfig: deps.gstConfig,
+        itemLedgerMappingStore: deps.itemLedgerMappingStore,
+        godownConfig: deps.godownConfig,
+        stockAvailabilityStore: deps.stockAvailabilityStore,
+      },
+      {
+        draftVersionId: turn.draftVersionId,
+        voucher: adapterResult.voucher,
+        correlationId: turn.correlationId,
+      },
+    );
+    await deps.telegram.sendMessage(turn.chatId, buildPostedResultText(result));
+  } catch (error) {
+    // PostingRejectedError covers 'not_confirmed' (a race with something
+    // else touching this draft) and 'gst_or_ledger_not_ready' (readiness
+    // drifted between the check above and postConfirmedTransaction's own
+    // immediate-pre-write re-check) — postConfirmedTransaction has already
+    // audited the specific reason itself. Anything else is unexpected.
+    if (error instanceof PostingRejectedError) {
+      await deps.telegram.sendMessage(turn.chatId, buildPostingFailedText([error.message]));
+      return;
+    }
+    throw error;
+  }
 }
 
 export async function handleCallbackQuery(
@@ -88,7 +218,9 @@ export async function handleCallbackQuery(
 
   if (updated === null) {
     // Lost a race with another request between the read above and this
-    // compare-and-set (e.g. a duplicate tap processed concurrently).
+    // compare-and-set (e.g. a duplicate tap processed concurrently, or
+    // Telegram redelivering the same callback). The pipeline below never
+    // runs a second time for the same draft version because of this.
     await reject(deps, turn, 'concurrent_update');
     return;
   }
@@ -102,8 +234,12 @@ export async function handleCallbackQuery(
   });
 
   await deps.telegram.answerCallbackQuery(turn.callbackQueryId);
-  await deps.telegram.sendMessage(
-    turn.chatId,
-    turn.action === 'confirm' ? buildConfirmedText() : buildCancelledText(),
-  );
+
+  if (turn.action === 'cancel') {
+    await deps.telegram.sendMessage(turn.chatId, buildCancelledText());
+    return;
+  }
+
+  await deps.telegram.sendMessage(turn.chatId, buildConfirmedText());
+  await postConfirmedDraft(deps, turn, updated.draft, updated.validation);
 }

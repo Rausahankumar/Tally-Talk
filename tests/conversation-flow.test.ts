@@ -25,6 +25,8 @@ import { createStockAvailabilityCache } from '../src/tally/stockAvailabilityCach
 import type { StockAvailabilityStore } from '../src/tally/stockAvailability.ts';
 import { createItemLedgerMappingStore } from '../src/gst/itemLedgerMapping.ts';
 import type { ItemLedgerMappingStore } from '../src/gst/itemLedgerMapping.ts';
+import { createPostingStore } from '../src/tally/posting.ts';
+import type { PostingStore, TallyPostingClient } from '../src/tally/posting.ts';
 import type { LLMClient } from '../src/llm/client.ts';
 import type { TransactionDraft } from '../src/llm/schema.ts';
 import type { Database } from '../src/db/sqlite.ts';
@@ -112,6 +114,39 @@ function createControllableLLMClient(): LLMClient & {
   return state;
 }
 
+interface ScriptedPostOutcome {
+  readonly outcome: 'posted' | 'failed' | 'uncertain';
+  readonly message: string;
+  readonly tallyVoucherId: string | null;
+  readonly raw: string;
+}
+
+const DEFAULT_POST_OUTCOME: ScriptedPostOutcome = {
+  outcome: 'posted',
+  message: 'Voucher created in TallyPrime',
+  tallyVoucherId: 'TV-1',
+  raw: '<RESPONSE><CREATED>1</CREATED><ERRORS>0</ERRORS></RESPONSE>',
+};
+
+/** Lets each test script exactly what a "TallyPrime Import request" returns, without any real network call. */
+function createControllableTallyPostingClient(): TallyPostingClient & {
+  setNextResult(result: ScriptedPostOutcome): void;
+  readonly calls: string[];
+} {
+  let next: ScriptedPostOutcome = DEFAULT_POST_OUTCOME;
+  const calls: string[] = [];
+  return {
+    calls,
+    setNextResult(result: ScriptedPostOutcome): void {
+      next = result;
+    },
+    async importVoucher(xml: string) {
+      calls.push(xml);
+      return next;
+    },
+  };
+}
+
 function draft(overrides: Partial<TransactionDraft> = {}): TransactionDraft {
   return {
     voucherType: 'sales',
@@ -162,6 +197,8 @@ let auditLog: AuditLog;
 let conversationStore: ConversationStore;
 let itemLedgerMappingStore: ItemLedgerMappingStore;
 let stockAvailabilityStore: StockAvailabilityStore;
+let postingStore: PostingStore;
+let postingClient: ReturnType<typeof createControllableTallyPostingClient>;
 let app: ReturnType<typeof createApp>;
 
 beforeEach(() => {
@@ -201,6 +238,9 @@ beforeEach(() => {
     ]);
   }
 
+  postingStore = createPostingStore(database.db);
+  postingClient = createControllableTallyPostingClient();
+
   app = createApp({
     config,
     telegram,
@@ -209,6 +249,8 @@ beforeEach(() => {
     conversationStore,
     itemLedgerMappingStore,
     stockAvailabilityStore,
+    postingStore,
+    postingClient,
     auditLog,
     logger: silentLogger,
   });
@@ -230,11 +272,16 @@ async function sendCallback(
   chatId: number,
   action: 'confirm' | 'cancel',
   draftVersionId: string,
+  callbackQueryId?: string,
 ): Promise<void> {
   await request(app)
     .post(TELEGRAM_WEBHOOK_PATH)
     .set(SECRET_TOKEN_HEADER, WEBHOOK_SECRET)
-    .send(callbackUpdate(userId, chatId, action, draftVersionId));
+    .send(
+      callbackQueryId === undefined
+        ? callbackUpdate(userId, chatId, action, draftVersionId)
+        : callbackUpdate(userId, chatId, action, draftVersionId, callbackQueryId),
+    );
 }
 
 function auditTypes(): string[] {
@@ -382,21 +429,96 @@ describe('confirm', () => {
     return conversationRow(CHAT_A)!.draft_version_id;
   }
 
-  it('marks only the exact pending draft as confirmed, and calls no Tally capability', async () => {
+  it('confirms, posts to TallyPrime, and reports the successful outcome', async () => {
     const versionId = await reachPreview();
+    postingClient.setNextResult({
+      outcome: 'posted',
+      message: 'Voucher created in TallyPrime',
+      tallyVoucherId: 'TV-42',
+      raw: '<RESPONSE><CREATED>1</CREATED><ERRORS>0</ERRORS></RESPONSE>',
+    });
 
     await sendCallback(USER_A, CHAT_A, 'confirm', versionId);
 
     expect(conversationRow(CHAT_A)?.status).toBe('confirmed');
-    expect(telegram.sent.at(-1)?.text).toMatch(/confirmed/i);
-    expect(telegram.sent.at(-1)?.text).toMatch(/not.*sent to TallyPrime|has not been sent/i);
-    expect(auditTypes()).toContain('user.confirmed');
-    // There is no Tally-write capability anywhere in this codebase; this
-    // asserts the behavioural side of that too — nothing Tally-related fires.
-    expect(auditTypes().some((t) => t.startsWith('tally.'))).toBe(false);
+    expect(telegram.sent.at(-2)?.text).toMatch(/confirmed/i); // immediate ack, before Tally is contacted
+    expect(telegram.sent.at(-1)?.text).toMatch(/posted to tallyprime/i);
+    expect(telegram.sent.at(-1)?.text).toContain('TV-42');
+    expect(postingClient.calls).toHaveLength(1);
+    expect(auditTypes()).toEqual(
+      expect.arrayContaining(['user.confirmed', 'tally.request.sent', 'tally.response.received']),
+    );
   });
 
-  it('rejects a duplicate confirmation safely', async () => {
+  it('reports a readiness failure at confirm time without contacting Tally, when configuration drifted since preview', async () => {
+    const versionId = await reachPreview();
+    // Simulate a ledger having been renamed/removed in Tally after preview
+    // was shown but before Confirm was tapped.
+    createTallyMasterCache({ db: database.db }).replaceAll('Ledger', [
+      { NAME: 'Sales', PARENT: 'Sales Accounts' },
+      { NAME: 'Suresh & Sons', PARENT: 'Sundry Creditors' },
+      // CGST/SGST deliberately absent now.
+    ]);
+
+    await sendCallback(USER_A, CHAT_A, 'confirm', versionId);
+
+    expect(conversationRow(CHAT_A)?.status).toBe('confirmed'); // the user's approval itself still stands
+    expect(telegram.sent.at(-1)?.text).toMatch(/configuration issue/i);
+    expect(postingClient.calls).toHaveLength(0);
+    expect(auditTypes()).toContain('tally.posting.rejected');
+    expect(auditTypes()).not.toContain('tally.request.sent');
+  });
+
+  it('reports an adapter failure at confirm time without contacting Tally, when the stock item base unit is missing', async () => {
+    const versionId = await reachPreview();
+    // checkPostingReadiness never reads StockItem.BASEUNITS, so readiness
+    // still passes — only the adapter, which needs it to build the XML
+    // quantity, fails. This is the one failure mode the adapter can hit that
+    // readiness cannot.
+    createTallyMasterCache({ db: database.db }).replaceAll('StockItem', [
+      { NAME: 'Steel Rods', PARENT: 'Building Materials' }, // BASEUNITS missing
+    ]);
+
+    await sendCallback(USER_A, CHAT_A, 'confirm', versionId);
+
+    expect(conversationRow(CHAT_A)?.status).toBe('confirmed');
+    expect(telegram.sent.at(-1)?.text).toMatch(/configuration issue/i);
+    expect(telegram.sent.at(-1)?.text).toMatch(/base unit/i);
+    expect(postingClient.calls).toHaveLength(0);
+    expect(auditTypes()).toContain('tally.posting.rejected');
+  });
+
+  it('reports a Tally-side rejection distinctly from a readiness/adapter failure', async () => {
+    const versionId = await reachPreview();
+    postingClient.setNextResult({
+      outcome: 'failed',
+      message: 'Ledger does not exist: "Sales Local"',
+      tallyVoucherId: null,
+      raw: '<RESPONSE><ERRORS>1</ERRORS></RESPONSE>',
+    });
+
+    await sendCallback(USER_A, CHAT_A, 'confirm', versionId);
+
+    expect(telegram.sent.at(-1)?.text).toMatch(/rejected this transaction/i);
+    expect(telegram.sent.at(-1)?.text).toContain('Ledger does not exist');
+    expect(postingClient.calls).toHaveLength(1);
+  });
+
+  it('reports an uncertain outcome distinctly, telling the user to check TallyPrime directly', async () => {
+    const versionId = await reachPreview();
+    postingClient.setNextResult({
+      outcome: 'uncertain',
+      message: 'Could not confirm the outcome: timeout',
+      tallyVoucherId: null,
+      raw: '',
+    });
+
+    await sendCallback(USER_A, CHAT_A, 'confirm', versionId);
+
+    expect(telegram.sent.at(-1)?.text).toMatch(/could not confirm whether this reached tallyprime/i);
+  });
+
+  it('rejects a duplicate confirmation safely, and never posts a second time', async () => {
     const versionId = await reachPreview();
     await sendCallback(USER_A, CHAT_A, 'confirm', versionId);
 
@@ -405,6 +527,23 @@ describe('confirm', () => {
     expect(auditTypes().filter((t) => t === 'user.confirmed')).toHaveLength(1);
     expect(auditTypes()).toContain('confirmation.rejected');
     expect(telegram.sent.at(-1)?.text).toMatch(/no longer valid/i);
+    // The duplicate tap must never reach the posting pipeline at all.
+    expect(postingClient.calls).toHaveLength(1);
+  });
+
+  it('does not post twice even if the same Confirm callback is redelivered concurrently', async () => {
+    const versionId = await reachPreview();
+
+    // Two "simultaneous" deliveries of the identical callback, racing each
+    // other — the atomic status transition in setStatusIfCurrent must let
+    // exactly one through, so exactly one posting attempt happens.
+    await Promise.all([
+      sendCallback(USER_A, CHAT_A, 'confirm', versionId, 'same-callback-query-id'),
+      sendCallback(USER_A, CHAT_A, 'confirm', versionId, 'same-callback-query-id'),
+    ]);
+
+    expect(postingClient.calls.length).toBeLessThanOrEqual(1);
+    expect(auditTypes().filter((t) => t === 'user.confirmed')).toHaveLength(1);
   });
 
   it('rejects a stale confirmation for a superseded draft version', async () => {
@@ -549,6 +688,8 @@ describe('Phase 8 — GST and ledger configuration in the conversation flow', ()
       conversationStore,
       itemLedgerMappingStore,
       stockAvailabilityStore,
+      postingStore,
+      postingClient,
       auditLog,
       logger: silentLogger,
     });

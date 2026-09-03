@@ -14,6 +14,7 @@ import type { Config } from './config/index.ts';
 import type { ConversationStore } from './conversation/store.ts';
 import type { ItemLedgerMappingStore } from './gst/itemLedgerMapping.ts';
 import type { StockAvailabilityStore } from './tally/stockAvailability.ts';
+import type { PostingStore, TallyPostingClient } from './tally/posting.ts';
 import type { LLMClient } from './llm/client.ts';
 import type { Logger } from './logger.ts';
 import { consoleLogger } from './logger.ts';
@@ -33,6 +34,8 @@ export interface AppDeps {
   readonly conversationStore: ConversationStore;
   readonly itemLedgerMappingStore: ItemLedgerMappingStore;
   readonly stockAvailabilityStore: StockAvailabilityStore;
+  readonly postingStore: PostingStore;
+  readonly postingClient: TallyPostingClient;
   readonly auditLog: AuditLog;
   readonly logger?: Logger;
 }
@@ -61,6 +64,9 @@ export function createApp(deps: AppDeps): Express {
       itemLedgerMappingStore: deps.itemLedgerMappingStore,
       godownConfig: deps.config.godown,
       stockAvailabilityStore: deps.stockAvailabilityStore,
+      companyName: deps.config.tally.companyName,
+      postingStore: deps.postingStore,
+      postingClient: deps.postingClient,
       auditLog: deps.auditLog,
       logger,
     }),

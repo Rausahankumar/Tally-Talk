@@ -15,7 +15,18 @@ import type { TransactionDraft } from '../src/llm/schema.ts';
 import type { Database } from '../src/db/sqlite.ts';
 import { createItemLedgerMappingStore } from '../src/gst/itemLedgerMapping.ts';
 import { createStockAvailabilityCache } from '../src/tally/stockAvailabilityCache.ts';
+import { createPostingStore } from '../src/tally/posting.ts';
+import type { TallyPostingClient } from '../src/tally/posting.ts';
 import { createTestDatabase } from './helpers/testDatabase.ts';
+
+/** None of this file's tests reach a real Confirm — this must never be called. */
+function unusedPostingClient(): TallyPostingClient {
+  return {
+    async importVoucher() {
+      throw new Error('test bug: unexpected Tally import call in telegram-webhook.test.ts');
+    },
+  };
+}
 
 /** A draft that extracts to "nothing usable" — deterministic, no real LLM call. */
 const UNKNOWN_DRAFT: TransactionDraft = {
@@ -104,6 +115,8 @@ beforeEach(() => {
     conversationStore,
     itemLedgerMappingStore: createItemLedgerMappingStore(database.db),
     stockAvailabilityStore: createStockAvailabilityCache({ db: database.db }),
+    postingStore: createPostingStore(database.db),
+    postingClient: unusedPostingClient(),
     auditLog,
     logger: silentLogger,
   });

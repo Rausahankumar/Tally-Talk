@@ -8,6 +8,7 @@
 import type { GstTreatment } from '../gst/treatment.ts';
 import type { PostingBlocker } from '../gst/postingReadiness.ts';
 import type { TransactionDraft } from '../llm/schema.ts';
+import type { PostConfirmedTransactionResult } from '../tally/posting.ts';
 import type { DraftValidationResult, ValidationIssue } from '../validation/types.ts';
 import type { PendingClarification } from './types.ts';
 
@@ -102,7 +103,36 @@ export function buildPreviewText(
 }
 
 export function buildConfirmedText(): string {
-  return 'Confirmed. This transaction is recorded as ready — it has not been sent to TallyPrime yet.';
+  return 'Confirmed. Posting to TallyPrime now…';
+}
+
+/**
+ * A problem that blocked posting before Tally was ever contacted — either
+ * the final readiness re-check or the draft-to-voucher adapter refused,
+ * both for reasons nothing the user can type will fix. Deliberately not a
+ * question, same reasoning as {@link buildConfigurationErrorText}.
+ */
+export function buildPostingFailedText(reasons: readonly string[]): string {
+  const unique = [...new Set(reasons)];
+  return [
+    "This transaction could not be posted to TallyPrime because of a configuration issue:",
+    ...unique.map((m) => `  • ${m}`),
+    'Please contact whoever manages this bot to fix the configuration. Nothing was sent to TallyPrime.',
+  ].join('\n');
+}
+
+/** The outcome of an actual attempt to reach TallyPrime. */
+export function buildPostedResultText(result: PostConfirmedTransactionResult): string {
+  if (result.status === 'posted') {
+    return result.tallyVoucherId !== null
+      ? `Posted to TallyPrime successfully. Voucher ID: ${result.tallyVoucherId}.`
+      : 'Posted to TallyPrime successfully.';
+  }
+  if (result.status === 'failed') {
+    return `TallyPrime rejected this transaction: ${result.message}`;
+  }
+  // 'uncertain' (a network/timeout ambiguity) or the transient 'posting' status.
+  return `Could not confirm whether this reached TallyPrime: ${result.message}. Please check TallyPrime directly before trying again.`;
 }
 
 export function buildCancelledText(): string {

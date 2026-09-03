@@ -29,6 +29,7 @@ import type { AuditLog } from '../../audit/log.ts';
 import type { GodownConfig, GstLedgerConfig } from '../../config/index.ts';
 import type { ItemLedgerMappingStore } from '../../gst/itemLedgerMapping.ts';
 import type { StockAvailabilityStore } from '../../tally/stockAvailability.ts';
+import type { PostingStore, TallyPostingClient } from '../../tally/posting.ts';
 import type { Logger } from '../../logger.ts';
 import type { LLMClient } from '../../llm/client.ts';
 import type { ConversationStore } from '../../conversation/store.ts';
@@ -50,6 +51,9 @@ export interface TelegramWebhookDeps {
   readonly itemLedgerMappingStore: ItemLedgerMappingStore;
   readonly godownConfig: GodownConfig;
   readonly stockAvailabilityStore: StockAvailabilityStore;
+  readonly companyName: string;
+  readonly postingStore: PostingStore;
+  readonly postingClient: TallyPostingClient;
   readonly auditLog: AuditLog;
   readonly logger: Logger;
 }
@@ -160,7 +164,19 @@ export function createTelegramWebhookRouter(deps: TelegramWebhookDeps): Router {
         );
       } else {
         await handleCallbackQuery(
-          { telegram: deps.telegram, conversationStore: deps.conversationStore, auditLog: deps.auditLog },
+          {
+            telegram: deps.telegram,
+            conversationStore: deps.conversationStore,
+            auditLog: deps.auditLog,
+            db: deps.db,
+            gstConfig: deps.gstConfig,
+            itemLedgerMappingStore: deps.itemLedgerMappingStore,
+            godownConfig: deps.godownConfig,
+            stockAvailabilityStore: deps.stockAvailabilityStore,
+            companyName: deps.companyName,
+            postingStore: deps.postingStore,
+            postingClient: deps.postingClient,
+          },
           {
             chatId: callbackQuery!.chatId,
             userId: callbackQuery!.userId,

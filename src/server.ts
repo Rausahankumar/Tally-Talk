@@ -16,6 +16,7 @@ import { createConversationStore } from './conversation/store.ts';
 import { openDatabase } from './db/sqlite.ts';
 import { createItemLedgerMappingStore } from './gst/itemLedgerMapping.ts';
 import { createStockAvailabilityCache } from './tally/stockAvailabilityCache.ts';
+import { createPostingStore, createTallyPostingClient } from './tally/posting.ts';
 import { createAnthropicClient } from './llm/client.ts';
 import { createTelegramClient } from './channels/telegram/client.ts';
 import { consoleLogger } from './logger.ts';
@@ -71,6 +72,8 @@ function main(): void {
     conversationStore: createConversationStore(database.db),
     itemLedgerMappingStore: createItemLedgerMappingStore(database.db),
     stockAvailabilityStore: createStockAvailabilityCache({ db: database.db }),
+    postingStore: createPostingStore(database.db),
+    postingClient: createTallyPostingClient({ host: config.tally.host, port: config.tally.port }),
     auditLog: createAuditLog({ db: database.db, logger: consoleLogger }),
     logger: consoleLogger,
   });
