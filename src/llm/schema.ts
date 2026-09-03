@@ -28,6 +28,14 @@ export interface DraftLineItem {
   readonly itemName: string;
   readonly quantity: number | null;
   readonly rate: number | null;
+  /**
+   * The godown/warehouse name the user explicitly stated for this item, e.g.
+   * "10 Cement Bags from Warehouse B". Extracted only when stated for this
+   * specific item; never inferred from another item, the message, or
+   * anything else. `null` means unstated — a later step resolves this
+   * against the configured default godown, never guesses one.
+   */
+  readonly godown: string | null;
 }
 
 export interface TransactionDraft {
@@ -68,8 +76,9 @@ export const TRANSACTION_DRAFT_TOOL_SCHEMA = {
           itemName: { type: 'string' },
           quantity: { type: ['number', 'null'] },
           rate: { type: ['number', 'null'] },
+          godown: { type: ['string', 'null'] },
         },
-        required: ['itemName', 'quantity', 'rate'],
+        required: ['itemName', 'quantity', 'rate', 'godown'],
         additionalProperties: false,
       },
     },
@@ -114,7 +123,7 @@ function validateLineItem(value: unknown, index: number, problems: string[]): Dr
     return null;
   }
 
-  const { itemName, quantity, rate, ...rest } = value;
+  const { itemName, quantity, rate, godown, ...rest } = value;
   const extra = Object.keys(rest);
   if (extra.length > 0) {
     problems.push(`items[${index}] has unexpected fields: ${extra.join(', ')}`);
@@ -132,8 +141,12 @@ function validateLineItem(value: unknown, index: number, problems: string[]): Dr
     problems.push(`items[${index}].rate must be a number or null`);
     return null;
   }
+  if (godown !== null && (typeof godown !== 'string' || godown.trim() === '')) {
+    problems.push(`items[${index}].godown must be a non-empty string or null`);
+    return null;
+  }
 
-  return { itemName, quantity, rate };
+  return { itemName, quantity, rate, godown };
 }
 
 /**

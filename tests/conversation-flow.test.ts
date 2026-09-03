@@ -55,6 +55,12 @@ const config: Config = {
     // their own app with no default to test the "must ask" behaviour.
     defaultPlaceOfSupply: 'Delhi',
   },
+  godown: {
+    // A default is configured for the shared fixture, same reasoning as
+    // defaultPlaceOfSupply above — most tests here are not exercising
+    // godown-specific behaviour and should reach preview as before.
+    defaultGodown: 'Main Location',
+  },
   databasePath: ':memory:',
   tally: { host: '127.0.0.1', port: 9000, companyName: 'Test Company' },
   llm: { provider: 'anthropic', apiKey: 'test-api-key', model: 'claude-sonnet-5' },
@@ -179,6 +185,7 @@ beforeEach(() => {
     { NAME: 'Steel Rods', PARENT: 'Building Materials', BASEUNITS: 'Kg' },
   ]);
   masterCache.replaceAll('VoucherType', [{ NAME: 'Sales', PARENT: '' }, { NAME: 'Purchase', PARENT: '' }]);
+  masterCache.replaceAll('Godown', [{ NAME: 'Main Location', PARENT: 'Primary' }]);
 
   itemLedgerMappingStore = createItemLedgerMappingStore(database.db);
   for (const stockItemName of ['ACC Cement OPC 43 Grade', 'Cement Bags', 'Steel Rods']) {
@@ -239,7 +246,7 @@ describe('a valid transaction request reaches preview', () => {
     llm.setNextResponse(
       draft({
         partyName: 'Suresh & Sons',
-        items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500 }],
+        items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500, godown: null }],
         gstPercent: 18,
       }),
     );
@@ -267,7 +274,7 @@ describe('a valid transaction request reaches preview', () => {
 describe('missing information triggers a targeted follow-up', () => {
   it('asks only for what is actually missing, and preserves what is known', async () => {
     llm.setNextResponse(
-      draft({ partyName: 'Suresh & Sons', items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500 }] }),
+      draft({ partyName: 'Suresh & Sons', items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500, godown: null }] }),
     );
 
     await sendMessage(USER_A, CHAT_A, 'Sell 100 steel rods to Suresh & Sons');
@@ -290,7 +297,7 @@ describe('a follow-up message continues the existing draft', () => {
     expect(conversationRow(CHAT_A)?.status).toBe('collecting');
 
     llm.setNextResponse(
-      draft({ items: [{ itemName: 'Steel Rods', quantity: 10, rate: 50 }], gstPercent: 18 }),
+      draft({ items: [{ itemName: 'Steel Rods', quantity: 10, rate: 50, godown: null }], gstPercent: 18 }),
     );
     await sendMessage(USER_A, CHAT_A, '10 steel rods at 50 each, 18% GST');
 
@@ -305,7 +312,7 @@ describe('a follow-up message continues the existing draft', () => {
 describe('an ambiguous master match requires clarification', () => {
   it('shows only the relevant candidates and never guesses', async () => {
     llm.setNextResponse(
-      draft({ partyName: 'Ramesh', items: [{ itemName: 'Steel Rods', quantity: 1, rate: 1 }], gstPercent: 18 }),
+      draft({ partyName: 'Ramesh', items: [{ itemName: 'Steel Rods', quantity: 1, rate: 1, godown: null }], gstPercent: 18 }),
     );
     await sendMessage(USER_A, CHAT_A, 'Sell to Ramesh: 1 steel rod at ₹1, 18% GST');
 
@@ -319,7 +326,7 @@ describe('an ambiguous master match requires clarification', () => {
 
   it('resolves the ambiguity from a plain reply, deterministically, with no extra LLM call', async () => {
     llm.setNextResponse(
-      draft({ partyName: 'Ramesh', items: [{ itemName: 'Steel Rods', quantity: 1, rate: 1 }], gstPercent: 18 }),
+      draft({ partyName: 'Ramesh', items: [{ itemName: 'Steel Rods', quantity: 1, rate: 1, godown: null }], gstPercent: 18 }),
     );
     await sendMessage(USER_A, CHAT_A, 'Sell to Ramesh: 1 steel rod at ₹1, 18% GST');
     const callsBeforeReply = llm.callCount;
@@ -339,7 +346,7 @@ describe('conversation isolation between users', () => {
     llm.setNextResponse(draft({ partyName: 'Suresh & Sons' }));
     await sendMessage(USER_A, CHAT_A, 'Selling to Suresh & Sons');
 
-    llm.setNextResponse(draft({ items: [{ itemName: 'Steel Rods', quantity: 5, rate: 50 }] }));
+    llm.setNextResponse(draft({ items: [{ itemName: 'Steel Rods', quantity: 5, rate: 50, godown: null }] }));
     await sendMessage(USER_B, CHAT_B, '5 steel rods at 50 each');
 
     const draftA = conversationStore.getActiveDraft(CHAT_A);
@@ -357,7 +364,7 @@ describe('confirm', () => {
     llm.setNextResponse(
       draft({
         partyName: 'Suresh & Sons',
-        items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500 }],
+        items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500, godown: null }],
         gstPercent: 18,
       }),
     );
@@ -394,7 +401,7 @@ describe('confirm', () => {
     const staleVersionId = await reachPreview();
 
     // A follow-up materially changes the draft, minting a new version.
-    llm.setNextResponse(draft({ partyName: 'Suresh & Sons', items: [{ itemName: 'Steel Rods', quantity: 200, rate: 500 }], gstPercent: 18 }));
+    llm.setNextResponse(draft({ partyName: 'Suresh & Sons', items: [{ itemName: 'Steel Rods', quantity: 200, rate: 500, godown: null }], gstPercent: 18 }));
     await sendMessage(USER_A, CHAT_A, 'actually make that 200');
 
     await sendCallback(USER_A, CHAT_A, 'confirm', staleVersionId);
@@ -423,7 +430,7 @@ describe('confirm', () => {
 describe('cancel', () => {
   it('invalidates the pending draft', async () => {
     llm.setNextResponse(
-      draft({ partyName: 'Suresh & Sons', items: [{ itemName: 'Steel Rods', quantity: 1, rate: 1 }], gstPercent: 18 }),
+      draft({ partyName: 'Suresh & Sons', items: [{ itemName: 'Steel Rods', quantity: 1, rate: 1, godown: null }], gstPercent: 18 }),
     );
     await sendMessage(USER_A, CHAT_A, 'Sell 1 steel rod to Suresh & Sons at 1, 18% GST');
     const versionId = conversationRow(CHAT_A)!.draft_version_id;
@@ -437,7 +444,7 @@ describe('cancel', () => {
 
   it('a cancelled draft cannot later be confirmed', async () => {
     llm.setNextResponse(
-      draft({ partyName: 'Suresh & Sons', items: [{ itemName: 'Steel Rods', quantity: 1, rate: 1 }], gstPercent: 18 }),
+      draft({ partyName: 'Suresh & Sons', items: [{ itemName: 'Steel Rods', quantity: 1, rate: 1, godown: null }], gstPercent: 18 }),
     );
     await sendMessage(USER_A, CHAT_A, 'Sell 1 steel rod to Suresh & Sons at 1, 18% GST');
     const versionId = conversationRow(CHAT_A)!.draft_version_id;
@@ -541,7 +548,7 @@ describe('Phase 8 — GST and ledger configuration in the conversation flow', ()
     llm.setNextResponse(
       draft({
         partyName: 'Suresh & Sons',
-        items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500 }],
+        items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500, godown: null }],
         gstPercent: 18,
       }),
     );
@@ -563,7 +570,7 @@ describe('Phase 8 — GST and ledger configuration in the conversation flow', ()
     llm.setNextResponse(
       draft({
         partyName: 'Suresh & Sons',
-        items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500 }],
+        items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500, godown: null }],
         gstPercent: 18,
       }),
     );
@@ -591,7 +598,7 @@ describe('Phase 8 — GST and ledger configuration in the conversation flow', ()
     llm.setNextResponse(
       draft({
         partyName: 'Suresh & Sons',
-        items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500 }],
+        items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500, godown: null }],
         gstPercent: 18,
       }),
     );
@@ -614,7 +621,7 @@ describe('Phase 8 — GST and ledger configuration in the conversation flow', ()
     llm.setNextResponse(
       draft({
         partyName: 'Suresh & Sons',
-        items: [{ itemName: 'Cement Bags', quantity: 10, rate: 400 }],
+        items: [{ itemName: 'Cement Bags', quantity: 10, rate: 400, godown: null }],
         gstPercent: 18,
       }),
     );
@@ -636,7 +643,7 @@ describe('Phase 8 — GST and ledger configuration in the conversation flow', ()
     llm.setNextResponse(
       draft({
         partyName: 'Suresh & Sons',
-        items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500 }],
+        items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500, godown: null }],
         gstPercent: 18,
       }),
     );
@@ -651,7 +658,7 @@ describe('Phase 8 — GST and ledger configuration in the conversation flow', ()
     llm.setNextResponse(
       draft({
         partyName: 'Suresh & Sons',
-        items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500 }],
+        items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500, godown: null }],
         gstPercent: 18,
       }),
     );

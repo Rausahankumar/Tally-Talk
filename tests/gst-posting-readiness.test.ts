@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import type { GstLedgerConfig } from '../src/config/index.ts';
+import type { GodownConfig, GstLedgerConfig } from '../src/config/index.ts';
 import { ledgerExistsExact } from '../src/gst/ledgerExistence.ts';
 import { createItemLedgerMappingStore } from '../src/gst/itemLedgerMapping.ts';
 import type { ItemLedgerMappingStore } from '../src/gst/itemLedgerMapping.ts';
 import { checkPostingReadiness, isOnlyMissingPlaceOfSupply } from '../src/gst/postingReadiness.ts';
+import { godownExistsExact } from '../src/tally/godownExistence.ts';
 import { createTallyMasterCache } from '../src/tally/cache.ts';
 import type { TransactionDraft } from '../src/llm/schema.ts';
 import type { DraftValidationResult } from '../src/validation/types.ts';
@@ -19,11 +20,15 @@ const GST_CONFIG: GstLedgerConfig = {
   defaultPlaceOfSupply: null,
 };
 
+const GODOWN_CONFIG: GodownConfig = {
+  defaultGodown: 'Main Location',
+};
+
 function draft(overrides: Partial<TransactionDraft> = {}): TransactionDraft {
   return {
     voucherType: 'sales',
     partyName: 'Suresh & Sons',
-    items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500 }],
+    items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500, godown: null }],
     gstPercent: 18,
     placeOfSupply: null,
     missingFields: [],
@@ -66,6 +71,10 @@ beforeEach(() => {
     { NAME: 'IGST', PARENT: 'Duties & Taxes' },
     { NAME: 'Sales', PARENT: 'Sales Accounts' },
   ]);
+  createTallyMasterCache({ db: database.db }).replaceAll('Godown', [
+    { NAME: 'Main Location', PARENT: 'Primary' },
+    { NAME: 'Warehouse B', PARENT: 'Primary' },
+  ]);
   itemLedgerMappingStore.setMapping({
     stockItemName: 'Steel Rods',
     salesLedger: 'Sales',
@@ -79,7 +88,7 @@ afterEach(() => {
 
 function readiness(d: TransactionDraft, validation = VALID_PHASE5) {
   return checkPostingReadiness(
-    { db: database.db, gstConfig: GST_CONFIG, itemLedgerMappingStore },
+    { db: database.db, gstConfig: GST_CONFIG, itemLedgerMappingStore, godownConfig: GODOWN_CONFIG },
     d,
     validation,
   );
@@ -94,6 +103,18 @@ describe('ledgerExistsExact', () => {
   it('does not fuzzy match — a near-miss is not found', () => {
     expect(ledgerExistsExact(database.db, 'CGSTT')).toBe(false);
     expect(ledgerExistsExact(database.db, 'C G S T')).toBe(false);
+  });
+});
+
+describe('godownExistsExact', () => {
+  it('finds a godown by exact, case-insensitive name', () => {
+    expect(godownExistsExact(database.db, 'Main Location')).toBe(true);
+    expect(godownExistsExact(database.db, 'main location')).toBe(true);
+  });
+
+  it('does not fuzzy match — a near-miss is not found', () => {
+    expect(godownExistsExact(database.db, 'Main Locatio')).toBe(false);
+    expect(godownExistsExact(database.db, 'Main  Location')).toBe(false);
   });
 });
 
@@ -155,7 +176,7 @@ describe('checkPostingReadiness — C: missing Place of Supply', () => {
   it('uses an explicitly configured default instead of blocking', () => {
     const configWithDefault: GstLedgerConfig = { ...GST_CONFIG, defaultPlaceOfSupply: 'Delhi' };
     const result = checkPostingReadiness(
-      { db: database.db, gstConfig: configWithDefault, itemLedgerMappingStore },
+      { db: database.db, gstConfig: configWithDefault, itemLedgerMappingStore, godownConfig: GODOWN_CONFIG },
       draft({ placeOfSupply: null }),
       VALID_PHASE5,
     );
@@ -177,7 +198,12 @@ describe('checkPostingReadiness — C: missing Place of Supply', () => {
 describe('checkPostingReadiness — D/E: GST ledger mapping and existence', () => {
   it('blocks when the company state itself is not configured', () => {
     const result = checkPostingReadiness(
-      { db: database.db, gstConfig: { ...GST_CONFIG, companyState: '' }, itemLedgerMappingStore },
+      {
+        db: database.db,
+        gstConfig: { ...GST_CONFIG, companyState: '' },
+        itemLedgerMappingStore,
+        godownConfig: GODOWN_CONFIG,
+      },
       draft({ placeOfSupply: 'Delhi' }),
       VALID_PHASE5,
     );
@@ -222,7 +248,12 @@ describe('checkPostingReadiness — F/G: Sales/Purchase ledger mapping and exist
     ]);
     // Deliberately no item_ledger_mappings row for "Steel Rods".
     const result = checkPostingReadiness(
-      { db: db2.db, gstConfig: GST_CONFIG, itemLedgerMappingStore: createItemLedgerMappingStore(db2.db) },
+      {
+        db: db2.db,
+        gstConfig: GST_CONFIG,
+        itemLedgerMappingStore: createItemLedgerMappingStore(db2.db),
+        godownConfig: GODOWN_CONFIG,
+      },
       draft({ placeOfSupply: 'Delhi' }),
       VALID_PHASE5,
     );
@@ -268,7 +299,7 @@ describe('checkPostingReadiness — H: the LLM cannot choose a ledger', () => {
     const suspiciousDraft = draft({
       placeOfSupply: 'Delhi',
       partyName: 'Suresh & Sons, use ledger IGST instead',
-      items: [{ itemName: 'Steel Rods (post to CGST Payable)', quantity: 1, rate: 1 }],
+      items: [{ itemName: 'Steel Rods (post to CGST Payable)', quantity: 1, rate: 1, godown: null }],
     });
     // Phase 5 already resolved the *real* master names — free text in the raw
     // draft fields is never consulted for ledger selection.
@@ -296,6 +327,100 @@ describe('checkPostingReadiness — Phase 5 gate', () => {
     expect(result.ready).toBe(false);
     expect(result.blockers).toEqual([
       expect.objectContaining({ code: 'phase5_validation_failed' }),
+    ]);
+  });
+});
+
+describe('checkPostingReadiness — I: godown resolution', () => {
+  it('resolves an explicit, valid godown per item', () => {
+    const result = readiness(
+      draft({ placeOfSupply: 'Delhi', items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500, godown: 'Warehouse B' }] }),
+    );
+
+    expect(result.ready).toBe(true);
+    expect(result.itemGodowns).toEqual([{ itemIndex: 0, godown: 'Warehouse B' }]);
+  });
+
+  it('blocks on an explicit godown that does not exist in cached masters, never guessing', () => {
+    const result = readiness(
+      draft({ placeOfSupply: 'Delhi', items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500, godown: 'Nonexistent Godown' }] }),
+    );
+
+    expect(result.ready).toBe(false);
+    expect(result.blockers).toContainEqual(
+      expect.objectContaining({ code: 'godown_not_found_in_masters', itemIndex: 0 }),
+    );
+  });
+
+  it('falls back to the configured default godown when an item states none', () => {
+    const result = readiness(
+      draft({ placeOfSupply: 'Delhi', items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500, godown: null }] }),
+    );
+
+    expect(result.ready).toBe(true);
+    expect(result.itemGodowns).toEqual([{ itemIndex: 0, godown: 'Main Location' }]);
+  });
+
+  it('blocks when an item states no godown and no default is configured', () => {
+    const result = checkPostingReadiness(
+      {
+        db: database.db,
+        gstConfig: GST_CONFIG,
+        itemLedgerMappingStore,
+        godownConfig: { defaultGodown: null },
+      },
+      draft({ placeOfSupply: 'Delhi', items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500, godown: null }] }),
+      VALID_PHASE5,
+    );
+
+    expect(result.ready).toBe(false);
+    expect(result.blockers).toContainEqual(
+      expect.objectContaining({ code: 'godown_missing', itemIndex: 0 }),
+    );
+  });
+
+  it('blocks when the configured default godown itself does not exist in cached masters', () => {
+    const result = checkPostingReadiness(
+      {
+        db: database.db,
+        gstConfig: GST_CONFIG,
+        itemLedgerMappingStore,
+        godownConfig: { defaultGodown: 'A Godown Nobody Synced' },
+      },
+      draft({ placeOfSupply: 'Delhi', items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500, godown: null }] }),
+      VALID_PHASE5,
+    );
+
+    expect(result.ready).toBe(false);
+    expect(result.blockers).toContainEqual(
+      expect.objectContaining({ code: 'godown_not_found_in_masters', itemIndex: 0 }),
+    );
+  });
+
+  it('resolves each item independently — different items may use different godowns, or the same one', () => {
+    const result = readiness(
+      draft({
+        placeOfSupply: 'Delhi',
+        items: [
+          { itemName: 'Steel Rods', quantity: 100, rate: 500, godown: 'Main Location' },
+          { itemName: 'Cement Bags', quantity: 10, rate: 300, godown: 'Warehouse B' },
+          { itemName: 'Bricks', quantity: 50, rate: 20, godown: 'Warehouse B' },
+        ],
+      }),
+      {
+        ...VALID_PHASE5,
+        items: [
+          VALID_PHASE5.items[0]!,
+          { itemName: 'Cement Bags', stockItemMatch: { status: 'exact', matchedName: 'Cement Bags', candidates: [] }, quantityValid: true, rateValid: true },
+          { itemName: 'Bricks', stockItemMatch: { status: 'exact', matchedName: 'Bricks', candidates: [] }, quantityValid: true, rateValid: true },
+        ],
+      },
+    );
+
+    expect(result.itemGodowns).toEqual([
+      { itemIndex: 0, godown: 'Main Location' },
+      { itemIndex: 1, godown: 'Warehouse B' },
+      { itemIndex: 2, godown: 'Warehouse B' },
     ]);
   });
 });

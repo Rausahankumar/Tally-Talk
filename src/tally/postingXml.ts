@@ -11,6 +11,14 @@
  * mirror image of Sales, but "commonly" is not "confirmed", and this project
  * does not guess at anything that posts to a real accounting system) — see
  * the Phase 7 completion report.
+ *
+ * Godown placement was confirmed the same way: a real Sales voucher manually
+ * created in TallyPrime with an explicit godown per item, then exported, shows
+ * `GODOWNNAME` nested inside each inventory entry's own `BATCHALLOCATIONS.LIST`
+ * — never at voucher level, never directly under `ALLINVENTORYENTRIES.LIST`.
+ * `BATCHNAME` ("Primary Batch") appeared alongside it in every real sample
+ * captured for this company (batch tracking is on for its stock items), so it
+ * is reproduced here too rather than omitted and left to guesswork.
  */
 
 export interface TallyLedgerAllocation {
@@ -34,6 +42,13 @@ export interface TallyVoucherLineItem {
   readonly amount: number;
   /** Which sales/income ledger this line's amount is credited to. */
   readonly ledgerAllocation: TallyLedgerAllocation;
+  /**
+   * The resolved godown for this item — already validated to exist in Tally
+   * by `checkPostingReadiness` before this type is ever constructed. Not
+   * nullable here: a caller with an unresolved godown has no business
+   * building a `SalesVoucherInput` at all.
+   */
+  readonly godown: string;
 }
 
 export interface SalesVoucherInput {
@@ -80,6 +95,17 @@ function creditSideTotal(input: SalesVoucherInput): number {
   return itemsTotal + taxTotal;
 }
 
+function buildBatchAllocationEntry(item: TallyVoucherLineItem): string {
+  return `
+      <BATCHALLOCATIONS.LIST>
+       <GODOWNNAME>${escapeXml(item.godown)}</GODOWNNAME>
+       <BATCHNAME>Primary Batch</BATCHNAME>
+       <AMOUNT>${formatAmount(item.amount)}</AMOUNT>
+       <ACTUALQTY>${formatQuantity(item.quantity, item.unit)}</ACTUALQTY>
+       <BILLEDQTY>${formatQuantity(item.quantity, item.unit)}</BILLEDQTY>
+      </BATCHALLOCATIONS.LIST>`;
+}
+
 function buildInventoryEntry(item: TallyVoucherLineItem): string {
   return `
       <ALLINVENTORYENTRIES.LIST>
@@ -88,7 +114,7 @@ function buildInventoryEntry(item: TallyVoucherLineItem): string {
        <RATE>${formatRate(item.rate, item.unit)}</RATE>
        <AMOUNT>${formatAmount(item.amount)}</AMOUNT>
        <ACTUALQTY>${formatQuantity(item.quantity, item.unit)}</ACTUALQTY>
-       <BILLEDQTY>${formatQuantity(item.quantity, item.unit)}</BILLEDQTY>
+       <BILLEDQTY>${formatQuantity(item.quantity, item.unit)}</BILLEDQTY>${buildBatchAllocationEntry(item)}
        <ACCOUNTINGALLOCATIONS.LIST>
         <LEDGERNAME>${escapeXml(item.ledgerAllocation.ledgerName)}</LEDGERNAME>
         <ISDEEMEDPOSITIVE>No</ISDEEMEDPOSITIVE>

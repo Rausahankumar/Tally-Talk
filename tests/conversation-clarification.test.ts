@@ -96,7 +96,7 @@ describe('applyClarification', () => {
     return {
       voucherType: 'sales',
       partyName: 'Ramesh',
-      items: [{ itemName: 'cement', quantity: 1, rate: 1 }],
+      items: [{ itemName: 'cement', quantity: 1, rate: 1, godown: null }],
       gstPercent: 18,
       placeOfSupply: null,
       missingFields: [],
@@ -113,7 +113,12 @@ describe('applyClarification', () => {
 
   it('resolves only the targeted item, leaving others untouched', () => {
     const result = applyClarification(
-      draft({ items: [{ itemName: 'cement', quantity: 1, rate: 1 }, { itemName: 'steel', quantity: 2, rate: 2 }] }),
+      draft({
+        items: [
+          { itemName: 'cement', quantity: 1, rate: 1, godown: null },
+          { itemName: 'steel', quantity: 2, rate: 2, godown: null },
+        ],
+      }),
       { kind: 'item', itemIndex: 1, candidates: [] },
       'Steel Rods',
     );

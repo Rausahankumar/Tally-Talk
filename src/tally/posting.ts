@@ -20,7 +20,7 @@ import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 
 import type { AuditLog } from '../audit/log.ts';
-import type { GstLedgerConfig } from '../config/index.ts';
+import type { GodownConfig, GstLedgerConfig } from '../config/index.ts';
 import { CONVERSATION_DRAFTS_TABLE, TALLY_POSTINGS_TABLE } from '../db/schema.ts';
 import { checkPostingReadiness } from '../gst/postingReadiness.ts';
 import type { ItemLedgerMappingStore } from '../gst/itemLedgerMapping.ts';
@@ -256,6 +256,7 @@ export interface PostConfirmedTransactionDeps {
   readonly auditLog: AuditLog;
   readonly gstConfig: GstLedgerConfig;
   readonly itemLedgerMappingStore: ItemLedgerMappingStore;
+  readonly godownConfig: GodownConfig;
 }
 
 export interface PostConfirmedTransactionInput {
@@ -353,7 +354,12 @@ export async function postConfirmedTransaction(
   // call. GST/ledger selection is never taken from `input.voucher` blindly —
   // it must still agree with what backend configuration says is correct now.
   const readiness = checkPostingReadiness(
-    { db: deps.db, gstConfig: deps.gstConfig, itemLedgerMappingStore: deps.itemLedgerMappingStore },
+    {
+      db: deps.db,
+      gstConfig: deps.gstConfig,
+      itemLedgerMappingStore: deps.itemLedgerMappingStore,
+      godownConfig: deps.godownConfig,
+    },
     context.draft,
     context.validation,
   );

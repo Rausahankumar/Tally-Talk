@@ -216,4 +216,18 @@ describe('loadConfig', () => {
       problemsFrom(validEnv({ DEFAULT_PLACE_OF_SUPPLY: 'Narnia' })).join('\n'),
     ).toContain('not a recognised Indian state');
   });
+
+  it('defaults to no default godown when unset', () => {
+    expect(loadConfig(validEnv()).godown.defaultGodown).toBeNull();
+  });
+
+  it('accepts an explicitly configured DEFAULT_GODOWN', () => {
+    const config = loadConfig(validEnv({ DEFAULT_GODOWN: 'Main Location' }));
+
+    expect(config.godown.defaultGodown).toBe('Main Location');
+  });
+
+  it('treats a whitespace-only DEFAULT_GODOWN as unset', () => {
+    expect(loadConfig(validEnv({ DEFAULT_GODOWN: '   ' })).godown.defaultGodown).toBeNull();
+  });
 });

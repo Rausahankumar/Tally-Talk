@@ -5,7 +5,7 @@ import { DraftValidationError, parseTransactionDraft } from '../src/llm/schema.t
 const VALID_DRAFT = {
   voucherType: 'sales',
   partyName: 'Ramesh',
-  items: [{ itemName: 'cement', quantity: 100, rate: 500 }],
+  items: [{ itemName: 'cement', quantity: 100, rate: 500, godown: null }],
   gstPercent: 18,
   placeOfSupply: null,
   missingFields: [],
@@ -44,11 +44,11 @@ describe('parseTransactionDraft — accepts a well-formed draft', () => {
   it('accepts a line item with null quantity and rate', () => {
     const draft = {
       ...VALID_DRAFT,
-      items: [{ itemName: 'cement', quantity: null, rate: null }],
+      items: [{ itemName: 'cement', quantity: null, rate: null, godown: null }],
     };
 
     expect(parseTransactionDraft(draft).items).toEqual([
-      { itemName: 'cement', quantity: null, rate: null },
+      { itemName: 'cement', quantity: null, rate: null, godown: null },
     ]);
   });
 
@@ -56,8 +56,8 @@ describe('parseTransactionDraft — accepts a well-formed draft', () => {
     const draft = {
       ...VALID_DRAFT,
       items: [
-        { itemName: 'cement', quantity: 100, rate: 500 },
-        { itemName: 'bricks', quantity: 50, rate: 20 },
+        { itemName: 'cement', quantity: 100, rate: 500, godown: null },
+        { itemName: 'bricks', quantity: 50, rate: 20, godown: null },
       ],
     };
 
@@ -68,6 +68,31 @@ describe('parseTransactionDraft — accepts a well-formed draft', () => {
     const draft = { ...VALID_DRAFT, placeOfSupply: 'Uttar Pradesh' };
 
     expect(parseTransactionDraft(draft).placeOfSupply).toBe('Uttar Pradesh');
+  });
+
+  it('accepts an explicit godown on a line item', () => {
+    const draft = {
+      ...VALID_DRAFT,
+      items: [{ itemName: 'cement', quantity: 100, rate: 500, godown: 'Warehouse B' }],
+    };
+
+    expect(parseTransactionDraft(draft).items[0]?.godown).toBe('Warehouse B');
+  });
+
+  it('accepts two items with independent godowns, including the same one', () => {
+    const draft = {
+      ...VALID_DRAFT,
+      items: [
+        { itemName: 'cement', quantity: 100, rate: 500, godown: 'Warehouse B' },
+        { itemName: 'bricks', quantity: 50, rate: 20, godown: 'Warehouse B' },
+        { itemName: 'sand', quantity: 10, rate: 5, godown: null },
+      ],
+    };
+
+    const items = parseTransactionDraft(draft).items;
+    expect(items[0]?.godown).toBe('Warehouse B');
+    expect(items[1]?.godown).toBe('Warehouse B');
+    expect(items[2]?.godown).toBeNull();
   });
 });
 
@@ -128,6 +153,24 @@ describe('parseTransactionDraft — rejects malformed drafts', () => {
 
   it('rejects a non-number, non-null gstPercent', () => {
     expect(problemsFrom({ ...VALID_DRAFT, gstPercent: '18%' }).join('\n')).toContain('gstPercent');
+  });
+
+  it('rejects a non-string, non-null godown on a line item', () => {
+    expect(
+      problemsFrom({
+        ...VALID_DRAFT,
+        items: [{ itemName: 'cement', quantity: 1, rate: 1, godown: 42 }],
+      }).join('\n'),
+    ).toContain('godown');
+  });
+
+  it('rejects an empty-string godown rather than treating it as unstated', () => {
+    expect(
+      problemsFrom({
+        ...VALID_DRAFT,
+        items: [{ itemName: 'cement', quantity: 1, rate: 1, godown: '' }],
+      }).join('\n'),
+    ).toContain('godown');
   });
 
   it('rejects a non-string, non-null placeOfSupply', () => {

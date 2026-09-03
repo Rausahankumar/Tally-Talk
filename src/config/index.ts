@@ -23,6 +23,17 @@ export interface TallyConfig {
   readonly companyName: string;
 }
 
+export interface GodownConfig {
+  /**
+   * Used only when an item states no godown. `null` means no default was
+   * configured — that item is blocked (a configuration error) rather than
+   * guessed. Checked against the cached Tally masters at readiness time, not
+   * here (this is the same deferred-existence-check pattern as the GST
+   * ledger names below).
+   */
+  readonly defaultGodown: string | null;
+}
+
 export interface LLMConfig {
   /** Only 'anthropic' is supported — the isolated LLM interface has one implementation. */
   readonly provider: 'anthropic';
@@ -57,6 +68,7 @@ export interface Config {
   readonly tally: TallyConfig;
   readonly llm: LLMConfig;
   readonly gst: GstLedgerConfig;
+  readonly godown: GodownConfig;
 }
 
 /** Raised when one or more environment values are missing or malformed. */
@@ -218,6 +230,11 @@ function parseGst(env: NodeJS.ProcessEnv, problems: string[]): GstLedgerConfig {
   };
 }
 
+function parseGodown(env: NodeJS.ProcessEnv): GodownConfig {
+  const rawDefault = env.DEFAULT_GODOWN?.trim() || null;
+  return { defaultGodown: rawDefault };
+}
+
 function parsePort(env: NodeJS.ProcessEnv, problems: string[]): number {
   const raw = env.PORT?.trim();
   if (!raw) return 3000;
@@ -250,6 +267,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     tally: parseTally(env, problems),
     llm: parseLLM(env, problems),
     gst: parseGst(env, problems),
+    godown: parseGodown(env),
   };
 
   if (problems.length > 0) throw new ConfigError(problems);

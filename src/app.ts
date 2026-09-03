@@ -57,6 +57,7 @@ export function createApp(deps: AppDeps): Express {
       conversationStore: deps.conversationStore,
       gstConfig: deps.config.gst,
       itemLedgerMappingStore: deps.itemLedgerMappingStore,
+      godownConfig: deps.config.godown,
       auditLog: deps.auditLog,
       logger,
     }),

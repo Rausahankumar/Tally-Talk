@@ -16,6 +16,7 @@ function voucherInput(overrides: Partial<SalesVoucherInput> = {}): SalesVoucherI
         rate: 500,
         amount: 50000,
         ledgerAllocation: { ledgerName: 'Sales', amount: 50000 },
+        godown: 'Main Location',
       },
     ],
     taxLedgerAllocations: [
@@ -100,8 +101,8 @@ describe('buildSalesVoucherXml', () => {
     const xml = buildSalesVoucherXml(
       voucherInput({
         items: [
-          { stockItemName: 'Cement', quantity: 1, unit: 'Bags', rate: 100, amount: 100, ledgerAllocation: { ledgerName: 'Sales', amount: 100 } },
-          { stockItemName: 'Bricks', quantity: 2, unit: 'Nos', rate: 50, amount: 100, ledgerAllocation: { ledgerName: 'Sales', amount: 100 } },
+          { stockItemName: 'Cement', quantity: 1, unit: 'Bags', rate: 100, amount: 100, ledgerAllocation: { ledgerName: 'Sales', amount: 100 }, godown: 'Main Location' },
+          { stockItemName: 'Bricks', quantity: 2, unit: 'Nos', rate: 50, amount: 100, ledgerAllocation: { ledgerName: 'Sales', amount: 100 }, godown: 'Warehouse B' },
         ],
         taxLedgerAllocations: [],
       }),
@@ -124,6 +125,62 @@ describe('buildSalesVoucherXml', () => {
   it('is deterministic: identical input produces identical output', () => {
     const input = voucherInput();
     expect(buildSalesVoucherXml(input)).toBe(buildSalesVoucherXml(input));
+  });
+
+  describe('godown placement (confirmed against a real captured voucher)', () => {
+    it('places GODOWNNAME inside BATCHALLOCATIONS.LIST, nested inside ALLINVENTORYENTRIES.LIST', () => {
+      const xml = buildSalesVoucherXml(voucherInput());
+
+      const inventoryBlock = /<ALLINVENTORYENTRIES\.LIST>([\s\S]*?)<\/ALLINVENTORYENTRIES\.LIST>/.exec(xml)?.[1];
+      expect(inventoryBlock).toBeDefined();
+
+      const batchBlock = /<BATCHALLOCATIONS\.LIST>([\s\S]*?)<\/BATCHALLOCATIONS\.LIST>/.exec(inventoryBlock!)?.[1];
+      expect(batchBlock).toBeDefined();
+      expect(batchBlock).toContain('<GODOWNNAME>Main Location</GODOWNNAME>');
+    });
+
+    it('does not place GODOWNNAME directly under ALLINVENTORYENTRIES.LIST', () => {
+      const xml = buildSalesVoucherXml(voucherInput());
+      const inventoryBlock = /<ALLINVENTORYENTRIES\.LIST>([\s\S]*?)<BATCHALLOCATIONS\.LIST>/.exec(xml)?.[1];
+
+      expect(inventoryBlock).toBeDefined();
+      expect(inventoryBlock).not.toContain('GODOWNNAME');
+    });
+
+    it('escapes the godown name', () => {
+      const xml = buildSalesVoucherXml(
+        voucherInput({
+          items: [
+            {
+              stockItemName: 'Steel Rods',
+              quantity: 100,
+              unit: 'Kg',
+              rate: 500,
+              amount: 50000,
+              ledgerAllocation: { ledgerName: 'Sales', amount: 50000 },
+              godown: 'A & B Godown',
+            },
+          ],
+        }),
+      );
+
+      expect(xml).toContain('<GODOWNNAME>A &amp; B Godown</GODOWNNAME>');
+    });
+
+    it('gives each item its own independent godown, including when items share one', () => {
+      const xml = buildSalesVoucherXml(
+        voucherInput({
+          items: [
+            { stockItemName: 'Cement', quantity: 1, unit: 'Bags', rate: 100, amount: 100, ledgerAllocation: { ledgerName: 'Sales', amount: 100 }, godown: 'Main Location' },
+            { stockItemName: 'Bricks', quantity: 2, unit: 'Nos', rate: 50, amount: 100, ledgerAllocation: { ledgerName: 'Sales', amount: 100 }, godown: 'Warehouse B' },
+            { stockItemName: 'Sand', quantity: 3, unit: 'Nos', rate: 30, amount: 90, ledgerAllocation: { ledgerName: 'Sales', amount: 90 }, godown: 'Warehouse B' },
+          ],
+        }),
+      );
+
+      const godowns = [...xml.matchAll(/<GODOWNNAME>([^<]+)<\/GODOWNNAME>/g)].map((m) => m[1]);
+      expect(godowns).toEqual(['Main Location', 'Warehouse B', 'Warehouse B']);
+    });
   });
 });
 

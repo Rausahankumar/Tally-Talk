@@ -41,7 +41,7 @@ function validDraft(overrides: Partial<TransactionDraft> = {}): TransactionDraft
   return {
     voucherType: 'sales',
     partyName: 'Suresh & Sons',
-    items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500 }],
+    items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500, godown: null }],
     gstPercent: 18,
     placeOfSupply: null,
     missingFields: [],
@@ -92,7 +92,7 @@ describe('validateTransactionDraft - exact matches', () => {
   it('resolves an exact stock item match', () => {
     const result = validateTransactionDraft(
       database.db,
-      validDraft({ items: [{ itemName: 'Cement Bags', quantity: 10, rate: 400 }] }),
+      validDraft({ items: [{ itemName: 'Cement Bags', quantity: 10, rate: 400, godown: null }] }),
     );
 
     expect(result.items[0]?.stockItemMatch).toEqual({
@@ -151,7 +151,7 @@ describe('validateTransactionDraft - unknown masters', () => {
   it('reports stock_item_not_found for an item that does not exist', () => {
     const result = validateTransactionDraft(
       database.db,
-      validDraft({ items: [{ itemName: 'Unobtainium Ingots', quantity: 1, rate: 1 }] }),
+      validDraft({ items: [{ itemName: 'Unobtainium Ingots', quantity: 1, rate: 1, godown: null }] }),
     );
 
     expect(result.isValid).toBe(false);
@@ -180,7 +180,7 @@ describe('validateTransactionDraft - fuzzy matching', () => {
   it('resolves a fuzzy stock item match for a short name against a long real one', () => {
     const result = validateTransactionDraft(
       database.db,
-      validDraft({ items: [{ itemName: 'Steel Rod', quantity: 5, rate: 50 }] }),
+      validDraft({ items: [{ itemName: 'Steel Rod', quantity: 5, rate: 50, godown: null }] }),
     );
 
     expect(result.items[0]?.stockItemMatch.status).toBe('fuzzy');
@@ -202,7 +202,7 @@ describe('validateTransactionDraft - ambiguous matches', () => {
   it('reports stock_item_ambiguous instead of guessing between two similar items', () => {
     const result = validateTransactionDraft(
       database.db,
-      validDraft({ items: [{ itemName: 'Cement', quantity: 10, rate: 400 }] }),
+      validDraft({ items: [{ itemName: 'Cement', quantity: 10, rate: 400, godown: null }] }),
     );
 
     expect(result.isValid).toBe(false);
@@ -224,7 +224,7 @@ describe('validateTransactionDraft - quantity and rate', () => {
   it('flags an invalid (zero) quantity', () => {
     const result = validateTransactionDraft(
       database.db,
-      validDraft({ items: [{ itemName: 'Steel Rods', quantity: 0, rate: 500 }] }),
+      validDraft({ items: [{ itemName: 'Steel Rods', quantity: 0, rate: 500, godown: null }] }),
     );
 
     expect(result.isValid).toBe(false);
@@ -237,7 +237,7 @@ describe('validateTransactionDraft - quantity and rate', () => {
   it('flags a negative quantity', () => {
     const result = validateTransactionDraft(
       database.db,
-      validDraft({ items: [{ itemName: 'Steel Rods', quantity: -5, rate: 500 }] }),
+      validDraft({ items: [{ itemName: 'Steel Rods', quantity: -5, rate: 500, godown: null }] }),
     );
 
     expect(result.items[0]?.quantityValid).toBe(false);
@@ -246,7 +246,7 @@ describe('validateTransactionDraft - quantity and rate', () => {
   it('flags an invalid (negative) rate', () => {
     const result = validateTransactionDraft(
       database.db,
-      validDraft({ items: [{ itemName: 'Steel Rods', quantity: 100, rate: -500 }] }),
+      validDraft({ items: [{ itemName: 'Steel Rods', quantity: 100, rate: -500, godown: null }] }),
     );
 
     expect(result.isValid).toBe(false);
@@ -259,7 +259,7 @@ describe('validateTransactionDraft - quantity and rate', () => {
   it('flags a missing quantity distinctly from an invalid one', () => {
     const result = validateTransactionDraft(
       database.db,
-      validDraft({ items: [{ itemName: 'Steel Rods', quantity: null, rate: 500 }] }),
+      validDraft({ items: [{ itemName: 'Steel Rods', quantity: null, rate: 500, godown: null }] }),
     );
 
     expect(result.issues).toContainEqual(
@@ -316,7 +316,7 @@ describe('validateTransactionDraft - multiple issues at once', () => {
     const result = validateTransactionDraft(database.db, {
       voucherType: 'unknown',
       partyName: null,
-      items: [{ itemName: '', quantity: -1, rate: 0 }],
+      items: [{ itemName: '', quantity: -1, rate: 0, godown: null }],
       gstPercent: 99,
       placeOfSupply: null,
       missingFields: [],

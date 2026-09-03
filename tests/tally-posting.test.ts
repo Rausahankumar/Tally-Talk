@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createAuditLog } from '../src/audit/log.ts';
 import type { AuditLog } from '../src/audit/log.ts';
-import type { GstLedgerConfig } from '../src/config/index.ts';
+import type { GodownConfig, GstLedgerConfig } from '../src/config/index.ts';
 import { CONVERSATION_DRAFTS_TABLE } from '../src/db/schema.ts';
 import { createItemLedgerMappingStore } from '../src/gst/itemLedgerMapping.ts';
 import type { ItemLedgerMappingStore } from '../src/gst/itemLedgerMapping.ts';
@@ -36,11 +36,15 @@ const GST_CONFIG: GstLedgerConfig = {
   defaultPlaceOfSupply: null,
 };
 
+const GODOWN_CONFIG: GodownConfig = {
+  defaultGodown: 'Main Location',
+};
+
 /** A draft + Phase 5 validation that is fully ready under Phase 8's readiness check. */
 const READY_DRAFT_JSON = JSON.stringify({
   voucherType: 'sales',
   partyName: 'Suresh & Sons',
-  items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500 }],
+  items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500, godown: null }],
   gstPercent: 18,
   placeOfSupply: 'Delhi', // same as GST_CONFIG.companyState -> intrastate (CGST+SGST)
   missingFields: [],
@@ -75,6 +79,7 @@ function voucherInput(): SalesVoucherInput {
         rate: 500,
         amount: 50000,
         ledgerAllocation: { ledgerName: 'Sales', amount: 50000 },
+        godown: 'Main Location',
       },
     ],
     taxLedgerAllocations: [{ ledgerName: 'GST', amount: 9000 }],
@@ -126,6 +131,9 @@ beforeEach(() => {
     { NAME: 'IGST', PARENT: 'Duties & Taxes' },
     { NAME: 'Sales', PARENT: 'Sales Accounts' },
   ]);
+  createTallyMasterCache({ db: database.db }).replaceAll('Godown', [
+    { NAME: 'Main Location', PARENT: 'Primary' },
+  ]);
   itemLedgerMappingStore.setMapping({
     stockItemName: 'Steel Rods',
     salesLedger: 'Sales',
@@ -151,6 +159,7 @@ function deps(client: TallyPostingClient): PostConfirmedTransactionDeps {
     auditLog,
     gstConfig: GST_CONFIG,
     itemLedgerMappingStore,
+    godownConfig: GODOWN_CONFIG,
   };
 }
 
@@ -510,6 +519,20 @@ describe('postConfirmedTransaction', () => {
     it('rejects posting when the item ledger mapping was removed after confirmation', async () => {
       insertConfirmedDraft(database.db);
       database.db.exec("DELETE FROM item_ledger_mappings WHERE stock_item_name = 'Steel Rods'");
+      const client = scriptedClient({ outcome: 'posted', message: 'ok', tallyVoucherId: '1', raw: '' });
+      const importSpy = vi.spyOn(client, 'importVoucher');
+
+      await expect(
+        postConfirmedTransaction(deps(client), { draftVersionId: DRAFT_VERSION_ID, voucher: voucherInput() }),
+      ).rejects.toThrow(PostingRejectedError);
+
+      expect(importSpy).not.toHaveBeenCalled();
+    });
+
+    it('rejects posting when the configured default godown no longer exists in the cache', async () => {
+      insertConfirmedDraft(database.db);
+      // Simulate the godown having been renamed/removed in Tally since confirmation.
+      createTallyMasterCache({ db: database.db }).replaceAll('Godown', []);
       const client = scriptedClient({ outcome: 'posted', message: 'ok', tallyVoucherId: '1', raw: '' });
       const importSpy = vi.spyOn(client, 'importVoucher');
 

@@ -47,7 +47,7 @@ describe('mergeDraft', () => {
   });
 
   it('keeps existing items when the new message mentions none', () => {
-    const items = [{ itemName: 'Cement', quantity: 10, rate: 50 }];
+    const items = [{ itemName: 'Cement', quantity: 10, rate: 50, godown: null }];
     const existing = draft({ items });
     const incoming = draft({ items: [] });
 
@@ -55,11 +55,11 @@ describe('mergeDraft', () => {
   });
 
   it('replaces items entirely when the new message restates them', () => {
-    const existing = draft({ items: [{ itemName: 'Cement', quantity: 10, rate: 50 }] });
-    const incoming = draft({ items: [{ itemName: 'Steel Rods', quantity: 5, rate: 100 }] });
+    const existing = draft({ items: [{ itemName: 'Cement', quantity: 10, rate: 50, godown: null }] });
+    const incoming = draft({ items: [{ itemName: 'Steel Rods', quantity: 5, rate: 100, godown: null }] });
 
     expect(mergeDraft(existing, incoming).items).toEqual([
-      { itemName: 'Steel Rods', quantity: 5, rate: 100 },
+      { itemName: 'Steel Rods', quantity: 5, rate: 100, godown: null },
     ]);
   });
 

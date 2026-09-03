@@ -4,17 +4,19 @@
  *
  * This runs *after* Phase 5's `validateTransactionDraft` has already passed —
  * it does not repeat those checks, it adds the ones Phase 5 had no data for
- * (place of supply, GST treatment, ledger mapping). Every decision here is a
- * plain function or an exact lookup against backend-controlled configuration
- * and the local master cache; nothing is inferred from the party's state,
- * nothing is fuzzy-matched, and nothing is chosen by the LLM.
+ * (place of supply, GST treatment, ledger mapping, per-item godown). Every
+ * decision here is a plain function or an exact lookup against
+ * backend-controlled configuration and the local master cache; nothing is
+ * inferred from the party's state, nothing is fuzzy-matched, and nothing is
+ * chosen by the LLM.
  */
 
 import type { DatabaseSync } from 'node:sqlite';
 
-import type { GstLedgerConfig } from '../config/index.ts';
+import type { GodownConfig, GstLedgerConfig } from '../config/index.ts';
 import type { TransactionDraft } from '../llm/schema.ts';
 import type { DraftValidationResult } from '../validation/types.ts';
+import { godownExistsExact } from '../tally/godownExistence.ts';
 import { ledgerExistsExact } from './ledgerExistence.ts';
 import type { ItemLedgerMappingStore } from './itemLedgerMapping.ts';
 import { isRecognizedState } from './states.ts';
@@ -28,7 +30,9 @@ export type PostingBlockCode =
   | 'place_of_supply_unrecognized'
   | 'gst_ledger_not_found_in_masters'
   | 'item_ledger_mapping_missing'
-  | 'item_ledger_not_found_in_masters';
+  | 'item_ledger_not_found_in_masters'
+  | 'godown_missing'
+  | 'godown_not_found_in_masters';
 
 export interface PostingBlocker {
   readonly code: PostingBlockCode;
@@ -42,12 +46,19 @@ export interface LineItemLedgers {
   readonly purchaseLedger: string | null;
 }
 
+export interface LineItemGodown {
+  readonly itemIndex: number;
+  /** The godown actually resolved for this item — stated or the configured default. `null` if unresolved. */
+  readonly godown: string | null;
+}
+
 export interface PostingReadinessResult {
   readonly ready: boolean;
   /** The place of supply actually used — either stated or the configured default. `null` if unresolved. */
   readonly placeOfSupply: string | null;
   readonly gstTreatment: GstTreatment | null;
   readonly itemLedgers: readonly LineItemLedgers[];
+  readonly itemGodowns: readonly LineItemGodown[];
   readonly blockers: readonly PostingBlocker[];
 }
 
@@ -55,6 +66,7 @@ export interface PostingReadinessDeps {
   readonly db: DatabaseSync;
   readonly gstConfig: GstLedgerConfig;
   readonly itemLedgerMappingStore: ItemLedgerMappingStore;
+  readonly godownConfig: GodownConfig;
 }
 
 /**
@@ -84,6 +96,7 @@ export function checkPostingReadiness(
       placeOfSupply: null,
       gstTreatment: null,
       itemLedgers: [],
+      itemGodowns: [],
       blockers: [
         { code: 'phase5_validation_failed', message: 'The transaction has not yet passed basic validation.' },
       ],
@@ -165,11 +178,41 @@ export function checkPostingReadiness(
     };
   });
 
+  // Godown resolution is independent of ledger/GST resolution above: it comes
+  // from the draft's own per-item field plus the configured default, never
+  // from Phase 5's stock item matching. Each item is resolved on its own —
+  // items may share a godown or each name a different one; neither is an
+  // error (per the real captured Tally evidence this mirrors).
+  const itemGodowns: LineItemGodown[] = draft.items.map((item, itemIndex) => {
+    const effectiveGodown = item.godown ?? deps.godownConfig.defaultGodown;
+
+    if (effectiveGodown === null) {
+      blockers.push({
+        code: 'godown_missing',
+        message: `No godown was stated for "${item.itemName}", and no default godown is configured.`,
+        itemIndex,
+      });
+      return { itemIndex, godown: null };
+    }
+
+    if (!godownExistsExact(deps.db, effectiveGodown)) {
+      blockers.push({
+        code: 'godown_not_found_in_masters',
+        message: `Godown "${effectiveGodown}" for "${item.itemName}" was not found in TallyPrime.`,
+        itemIndex,
+      });
+      return { itemIndex, godown: null };
+    }
+
+    return { itemIndex, godown: effectiveGodown };
+  });
+
   return {
     ready: blockers.length === 0,
     placeOfSupply: effectivePlaceOfSupply,
     gstTreatment,
     itemLedgers,
+    itemGodowns,
     blockers,
   };
 }

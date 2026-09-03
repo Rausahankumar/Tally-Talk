@@ -12,7 +12,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { AuditLog } from '../audit/log.ts';
 import { buildCallbackData } from '../channels/telegram/types.ts';
 import type { TelegramClient } from '../channels/telegram/client.ts';
-import type { GstLedgerConfig } from '../config/index.ts';
+import type { GodownConfig, GstLedgerConfig } from '../config/index.ts';
 import { checkPostingReadiness, isOnlyMissingPlaceOfSupply } from '../gst/postingReadiness.ts';
 import type { ItemLedgerMappingStore } from '../gst/itemLedgerMapping.ts';
 import type { LLMClient } from '../llm/client.ts';
@@ -40,6 +40,7 @@ export interface MessageHandlerDeps {
   readonly auditLog: AuditLog;
   readonly gstConfig: GstLedgerConfig;
   readonly itemLedgerMappingStore: ItemLedgerMappingStore;
+  readonly godownConfig: GodownConfig;
 }
 
 export interface IncomingTextTurn {
@@ -128,7 +129,12 @@ export async function handleIncomingTextMessage(
   const readiness =
     validation.isValid && pending === null
       ? checkPostingReadiness(
-          { db: deps.db, gstConfig: deps.gstConfig, itemLedgerMappingStore: deps.itemLedgerMappingStore },
+          {
+            db: deps.db,
+            gstConfig: deps.gstConfig,
+            itemLedgerMappingStore: deps.itemLedgerMappingStore,
+            godownConfig: deps.godownConfig,
+          },
           candidateDraft,
           validation,
         )
