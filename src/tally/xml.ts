@@ -124,9 +124,12 @@ export function parseCollectionResponse(xml: string, masterTag: string): RawMast
   }
 
   const collection = getPath(doc, ['ENVELOPE', 'BODY', 'DATA', 'COLLECTION']);
-  if (collection === undefined || collection === '') {
-    // No masters of this type: either DATA/COLLECTION is omitted entirely, or
-    // present but empty (parses to an empty string rather than an object).
+  if (collection === undefined || (typeof collection === 'string' && collection.trim() === '')) {
+    // No masters of this type: DATA/COLLECTION omitted entirely, or present
+    // but empty. Confirmed live: Tally returns `<COLLECTION>   </COLLECTION>`
+    // — whitespace, not an empty tag — for e.g. a stock item with no batches,
+    // and `trimValues: false` keeps that whitespace, so an equality check
+    // against '' alone misses it.
     return [];
   }
   if (typeof collection !== 'object' || collection === null) {

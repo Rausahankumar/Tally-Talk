@@ -130,6 +130,19 @@ describe('parseCollectionResponse — edge cases', () => {
     ).toEqual([]);
   });
 
+  it('returns an empty array for a whitespace-only collection, as real Tally sends', () => {
+    // Confirmed live: a Batch collection scoped to a stock item with no
+    // batches comes back as `<COLLECTION>   </COLLECTION>`, and the parser
+    // keeps that whitespace (trimValues: false). This must read as "no rows",
+    // not as an unrecognisable shape.
+    expect(
+      parseCollectionResponse(envelope('<DATA><COLLECTION>   </COLLECTION></DATA>'), 'BATCH'),
+    ).toEqual([]);
+    expect(
+      parseCollectionResponse(envelope('<DATA><COLLECTION>\n      </COLLECTION></DATA>'), 'BATCH'),
+    ).toEqual([]);
+  });
+
   it('normalises a single-record collection to a one-element array', () => {
     const xml = envelope(
       '<DATA><COLLECTION><LEDGER NAME="Solo"><PARENT TYPE="String">Sundry Debtors</PARENT></LEDGER></COLLECTION></DATA>',
