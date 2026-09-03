@@ -21,6 +21,8 @@ import { CONVERSATION_DRAFTS_TABLE } from '../src/db/schema.ts';
 import { createConversationStore } from '../src/conversation/store.ts';
 import type { ConversationStore } from '../src/conversation/store.ts';
 import { createTallyMasterCache } from '../src/tally/cache.ts';
+import { createStockAvailabilityCache } from '../src/tally/stockAvailabilityCache.ts';
+import type { StockAvailabilityStore } from '../src/tally/stockAvailability.ts';
 import { createItemLedgerMappingStore } from '../src/gst/itemLedgerMapping.ts';
 import type { ItemLedgerMappingStore } from '../src/gst/itemLedgerMapping.ts';
 import type { LLMClient } from '../src/llm/client.ts';
@@ -159,6 +161,7 @@ let database: Database;
 let auditLog: AuditLog;
 let conversationStore: ConversationStore;
 let itemLedgerMappingStore: ItemLedgerMappingStore;
+let stockAvailabilityStore: StockAvailabilityStore;
 let app: ReturnType<typeof createApp>;
 
 beforeEach(() => {
@@ -188,8 +191,14 @@ beforeEach(() => {
   masterCache.replaceAll('Godown', [{ NAME: 'Main Location', PARENT: 'Primary' }]);
 
   itemLedgerMappingStore = createItemLedgerMappingStore(database.db);
+  stockAvailabilityStore = createStockAvailabilityCache({ db: database.db });
   for (const stockItemName of ['ACC Cement OPC 43 Grade', 'Cement Bags', 'Steel Rods']) {
     itemLedgerMappingStore.setMapping({ stockItemName, salesLedger: 'Sales', purchaseLedger: 'Purchase' });
+    // Ample, unambiguous stock so tests unrelated to stock availability keep
+    // reaching preview exactly as before.
+    stockAvailabilityStore.replaceAllForItem(stockItemName, [
+      { batchName: 'Primary Batch', godownName: 'Main Location', quantity: 100000, unit: 'Nos' },
+    ]);
   }
 
   app = createApp({
@@ -199,6 +208,7 @@ beforeEach(() => {
     db: database.db,
     conversationStore,
     itemLedgerMappingStore,
+    stockAvailabilityStore,
     auditLog,
     logger: silentLogger,
   });
@@ -538,6 +548,7 @@ describe('Phase 8 — GST and ledger configuration in the conversation flow', ()
       db: database.db,
       conversationStore,
       itemLedgerMappingStore,
+      stockAvailabilityStore,
       auditLog,
       logger: silentLogger,
     });

@@ -29,8 +29,15 @@ export interface TallyClient {
   /**
    * Export one master collection, e.g. `exportCollection('Ledger', ['NAME',
    * 'PARENT'])`. Returns raw string-valued records — see {@link RawMasterRecord}.
+   *
+   * `childOf` scopes the collection to one parent's children — required for
+   * `Batch`, which returns zero rows unscoped even when batches exist.
    */
-  exportCollection(masterType: string, fields: readonly string[]): Promise<RawMasterRecord[]>;
+  exportCollection(
+    masterType: string,
+    fields: readonly string[],
+    options?: { readonly childOf?: string },
+  ): Promise<RawMasterRecord[]>;
 }
 
 export interface TallyClientOptions {
@@ -50,6 +57,7 @@ export function createTallyClient(options: TallyClientOptions): TallyClient {
     async exportCollection(
       masterType: string,
       fields: readonly string[],
+      exportOptions?: { readonly childOf?: string },
     ): Promise<RawMasterRecord[]> {
       // Distinct per call only to make server-side logs traceable; no
       // significance to Tally itself.
@@ -59,6 +67,7 @@ export function createTallyClient(options: TallyClientOptions): TallyClient {
         masterType,
         companyName: options.companyName,
         fields,
+        childOf: exportOptions?.childOf,
       });
 
       const controller = new AbortController();

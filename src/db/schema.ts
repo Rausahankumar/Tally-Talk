@@ -16,6 +16,7 @@ export const TALLY_MASTERS_TABLE = 'tally_masters';
 export const CONVERSATION_DRAFTS_TABLE = 'conversation_drafts';
 export const TALLY_POSTINGS_TABLE = 'tally_postings';
 export const ITEM_LEDGER_MAPPINGS_TABLE = 'item_ledger_mappings';
+export const STOCK_AVAILABILITY_TABLE = 'stock_availability';
 
 /** Render a string list as a SQL `IN (...)` value list. */
 function sqlList(values: readonly string[]): string {
@@ -325,6 +326,34 @@ BEGIN
 END;
 `;
 
+/**
+ * Migration 9 — cached per-(stock item, batch, godown) closing quantity.
+ *
+ * This is a cache of live Tally data (`TYPE=Batch` scoped with `CHILDOF`,
+ * confirmed live — see DECISIONS.md), not application configuration: a full
+ * resync for one stock item replaces its rows outright, the same
+ * replace-per-key pattern as `tally_masters`. `quantity` is stored as the
+ * parsed number, never Tally's raw "490.000 KG"-style string — comparing a
+ * requested quantity against that string would be wrong or unsafe.
+ * `UNIQUE(stock_item_name, batch_name, godown_name)` matches the real-world
+ * key: one closing balance per item+batch+godown combination.
+ */
+const MIGRATION_9 = `
+CREATE TABLE ${STOCK_AVAILABILITY_TABLE} (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  stock_item_name  TEXT NOT NULL,
+  batch_name       TEXT NOT NULL,
+  godown_name      TEXT NOT NULL,
+  quantity         REAL NOT NULL,
+  unit             TEXT NOT NULL,
+  synced_at        TEXT NOT NULL,
+  UNIQUE (stock_item_name, batch_name, godown_name)
+);
+
+CREATE INDEX idx_stock_availability_item_godown
+  ON ${STOCK_AVAILABILITY_TABLE} (stock_item_name, godown_name);
+`;
+
 /** Ordered migrations. Append to this list; never edit an applied entry. */
 const MIGRATIONS: readonly string[] = [
   MIGRATION_1,
@@ -335,6 +364,7 @@ const MIGRATIONS: readonly string[] = [
   MIGRATION_6,
   MIGRATION_7,
   MIGRATION_8,
+  MIGRATION_9,
 ];
 
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.length;

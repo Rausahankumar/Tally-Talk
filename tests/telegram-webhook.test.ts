@@ -14,6 +14,7 @@ import type { LLMClient } from '../src/llm/client.ts';
 import type { TransactionDraft } from '../src/llm/schema.ts';
 import type { Database } from '../src/db/sqlite.ts';
 import { createItemLedgerMappingStore } from '../src/gst/itemLedgerMapping.ts';
+import { createStockAvailabilityCache } from '../src/tally/stockAvailabilityCache.ts';
 import { createTestDatabase } from './helpers/testDatabase.ts';
 
 /** A draft that extracts to "nothing usable" — deterministic, no real LLM call. */
@@ -102,6 +103,7 @@ beforeEach(() => {
     db: database.db,
     conversationStore,
     itemLedgerMappingStore: createItemLedgerMappingStore(database.db),
+    stockAvailabilityStore: createStockAvailabilityCache({ db: database.db }),
     auditLog,
     logger: silentLogger,
   });

@@ -77,6 +77,38 @@ describe('createTallyClient', () => {
     await expect(client.exportCollection('Ledger', ['NAME'])).rejects.toThrow(/rejected the request/);
   });
 
+  it('includes CHILDOF in the request when the childOf option is given', async () => {
+    const fetchImpl = fakeFetch({ body: SUCCESS_BODY });
+    const client = createTallyClient({
+      host: '127.0.0.1',
+      port: 9000,
+      companyName: 'Acme',
+      fetchImpl,
+    });
+
+    await client.exportCollection('Batch', ['NAME', 'PARENT', 'GODOWNNAME', 'CLOSINGBALANCE'], {
+      childOf: 'Apple',
+    });
+
+    const [, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+    expect(String(init.body)).toContain('<CHILDOF>Apple</CHILDOF>');
+  });
+
+  it('omits CHILDOF when no childOf option is given', async () => {
+    const fetchImpl = fakeFetch({ body: SUCCESS_BODY });
+    const client = createTallyClient({
+      host: '127.0.0.1',
+      port: 9000,
+      companyName: 'Acme',
+      fetchImpl,
+    });
+
+    await client.exportCollection('Ledger', ['NAME']);
+
+    const [, init] = (fetchImpl as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+    expect(String(init.body)).not.toContain('CHILDOF');
+  });
+
   it('aborts the request after the configured timeout', async () => {
     const fetchImpl = vi.fn(
       (_url: string, init?: RequestInit) =>

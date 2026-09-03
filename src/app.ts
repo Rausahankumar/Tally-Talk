@@ -13,6 +13,7 @@ import type { AuditLog } from './audit/log.ts';
 import type { Config } from './config/index.ts';
 import type { ConversationStore } from './conversation/store.ts';
 import type { ItemLedgerMappingStore } from './gst/itemLedgerMapping.ts';
+import type { StockAvailabilityStore } from './tally/stockAvailability.ts';
 import type { LLMClient } from './llm/client.ts';
 import type { Logger } from './logger.ts';
 import { consoleLogger } from './logger.ts';
@@ -31,6 +32,7 @@ export interface AppDeps {
   readonly db: DatabaseSync;
   readonly conversationStore: ConversationStore;
   readonly itemLedgerMappingStore: ItemLedgerMappingStore;
+  readonly stockAvailabilityStore: StockAvailabilityStore;
   readonly auditLog: AuditLog;
   readonly logger?: Logger;
 }
@@ -58,6 +60,7 @@ export function createApp(deps: AppDeps): Express {
       gstConfig: deps.config.gst,
       itemLedgerMappingStore: deps.itemLedgerMappingStore,
       godownConfig: deps.config.godown,
+      stockAvailabilityStore: deps.stockAvailabilityStore,
       auditLog: deps.auditLog,
       logger,
     }),

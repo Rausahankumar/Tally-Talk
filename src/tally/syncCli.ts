@@ -10,8 +10,10 @@ import { ConfigError, loadConfig } from '../config/index.ts';
 import { consoleLogger } from '../logger.ts';
 import { openDatabase } from '../db/sqlite.ts';
 import { createTallyClient } from './client.ts';
-import { createTallyMasterCache } from './cache.ts';
+import { createTallyMasterCache, readCachedMasters } from './cache.ts';
 import { syncMasterData } from './masters.ts';
+import { createStockAvailabilityCache } from './stockAvailabilityCache.ts';
+import { syncStockAvailability } from './stockAvailability.ts';
 
 async function main(): Promise<void> {
   let config;
@@ -45,6 +47,21 @@ async function main(): Promise<void> {
     for (const result of results) {
       consoleLogger.info('Synced master type', { type: result.type, count: result.count });
     }
+
+    // Batch cannot be enumerated company-wide (confirmed live: TYPE=Batch
+    // with no CHILDOF returns zero rows even when batches exist) — sync it
+    // per stock item, using the names the master sync above just cached.
+    const stockItemNames = readCachedMasters(database.db, 'StockItem').map((row) => row.name);
+    const stockAvailabilityStore = createStockAvailabilityCache({ db: database.db });
+    consoleLogger.info('Syncing stock availability (batch + godown + closing quantity)', {
+      stockItemCount: stockItemNames.length,
+    });
+    const availabilityResults = await syncStockAvailability(client, stockAvailabilityStore, stockItemNames);
+    const totalAvailabilityRows = availabilityResults.reduce((sum, r) => sum + r.count, 0);
+    consoleLogger.info('Synced stock availability', {
+      stockItemsSynced: availabilityResults.length,
+      totalRows: totalAvailabilityRows,
+    });
   } finally {
     database.close();
   }

@@ -7,6 +7,8 @@ import type { ItemLedgerMappingStore } from '../src/gst/itemLedgerMapping.ts';
 import { checkPostingReadiness, isOnlyMissingPlaceOfSupply } from '../src/gst/postingReadiness.ts';
 import { godownExistsExact } from '../src/tally/godownExistence.ts';
 import { createTallyMasterCache } from '../src/tally/cache.ts';
+import { createStockAvailabilityCache } from '../src/tally/stockAvailabilityCache.ts';
+import type { StockAvailabilityStore } from '../src/tally/stockAvailability.ts';
 import type { TransactionDraft } from '../src/llm/schema.ts';
 import type { DraftValidationResult } from '../src/validation/types.ts';
 import type { Database } from '../src/db/sqlite.ts';
@@ -61,10 +63,12 @@ const INVALID_PHASE5: DraftValidationResult = {
 
 let database: Database;
 let itemLedgerMappingStore: ItemLedgerMappingStore;
+let stockAvailabilityStore: StockAvailabilityStore;
 
 beforeEach(() => {
   database = createTestDatabase();
   itemLedgerMappingStore = createItemLedgerMappingStore(database.db);
+  stockAvailabilityStore = createStockAvailabilityCache({ db: database.db });
   createTallyMasterCache({ db: database.db }).replaceAll('Ledger', [
     { NAME: 'CGST', PARENT: 'Duties & Taxes' },
     { NAME: 'SGST', PARENT: 'Duties & Taxes' },
@@ -80,6 +84,12 @@ beforeEach(() => {
     salesLedger: 'Sales',
     purchaseLedger: 'Purchase',
   });
+  // Ample, unambiguous stock for the default fixture item/godowns used by
+  // tests that are not specifically about stock availability.
+  stockAvailabilityStore.replaceAllForItem('Steel Rods', [
+    { batchName: 'Primary Batch', godownName: 'Main Location', quantity: 1000, unit: 'Kg' },
+    { batchName: 'Primary Batch', godownName: 'Warehouse B', quantity: 1000, unit: 'Kg' },
+  ]);
 });
 
 afterEach(() => {
@@ -88,7 +98,7 @@ afterEach(() => {
 
 function readiness(d: TransactionDraft, validation = VALID_PHASE5) {
   return checkPostingReadiness(
-    { db: database.db, gstConfig: GST_CONFIG, itemLedgerMappingStore, godownConfig: GODOWN_CONFIG },
+    { db: database.db, gstConfig: GST_CONFIG, itemLedgerMappingStore, godownConfig: GODOWN_CONFIG, stockAvailabilityStore },
     d,
     validation,
   );
@@ -176,7 +186,13 @@ describe('checkPostingReadiness — C: missing Place of Supply', () => {
   it('uses an explicitly configured default instead of blocking', () => {
     const configWithDefault: GstLedgerConfig = { ...GST_CONFIG, defaultPlaceOfSupply: 'Delhi' };
     const result = checkPostingReadiness(
-      { db: database.db, gstConfig: configWithDefault, itemLedgerMappingStore, godownConfig: GODOWN_CONFIG },
+      {
+        db: database.db,
+        gstConfig: configWithDefault,
+        itemLedgerMappingStore,
+        godownConfig: GODOWN_CONFIG,
+        stockAvailabilityStore,
+      },
       draft({ placeOfSupply: null }),
       VALID_PHASE5,
     );
@@ -203,6 +219,7 @@ describe('checkPostingReadiness — D/E: GST ledger mapping and existence', () =
         gstConfig: { ...GST_CONFIG, companyState: '' },
         itemLedgerMappingStore,
         godownConfig: GODOWN_CONFIG,
+        stockAvailabilityStore,
       },
       draft({ placeOfSupply: 'Delhi' }),
       VALID_PHASE5,
@@ -253,6 +270,7 @@ describe('checkPostingReadiness — F/G: Sales/Purchase ledger mapping and exist
         gstConfig: GST_CONFIG,
         itemLedgerMappingStore: createItemLedgerMappingStore(db2.db),
         godownConfig: GODOWN_CONFIG,
+        stockAvailabilityStore: createStockAvailabilityCache({ db: db2.db }),
       },
       draft({ placeOfSupply: 'Delhi' }),
       VALID_PHASE5,
@@ -368,6 +386,7 @@ describe('checkPostingReadiness — I: godown resolution', () => {
         gstConfig: GST_CONFIG,
         itemLedgerMappingStore,
         godownConfig: { defaultGodown: null },
+        stockAvailabilityStore,
       },
       draft({ placeOfSupply: 'Delhi', items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500, godown: null }] }),
       VALID_PHASE5,
@@ -386,6 +405,7 @@ describe('checkPostingReadiness — I: godown resolution', () => {
         gstConfig: GST_CONFIG,
         itemLedgerMappingStore,
         godownConfig: { defaultGodown: 'A Godown Nobody Synced' },
+        stockAvailabilityStore,
       },
       draft({ placeOfSupply: 'Delhi', items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500, godown: null }] }),
       VALID_PHASE5,
@@ -422,6 +442,172 @@ describe('checkPostingReadiness — I: godown resolution', () => {
       { itemIndex: 1, godown: 'Warehouse B' },
       { itemIndex: 2, godown: 'Warehouse B' },
     ]);
+  });
+});
+
+describe('checkPostingReadiness — J: stock availability', () => {
+  it('resolves the exact real batch name for a batch-tracked item (never "Primary Batch" by default)', () => {
+    stockAvailabilityStore.replaceAllForItem('Steel Rods', [
+      { batchName: '1', godownName: 'Main Location', quantity: 490, unit: 'KG' },
+    ]);
+
+    const result = readiness(
+      draft({ placeOfSupply: 'Delhi', items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500, godown: null }] }),
+    );
+
+    expect(result.ready).toBe(true);
+    expect(result.itemStock).toEqual([
+      { itemIndex: 0, resolvedBatch: '1', availableQuantity: 490, alternativeGodowns: [] },
+    ]);
+  });
+
+  it('resolves the implicit "Primary Batch" for a non-batch-tracked item', () => {
+    stockAvailabilityStore.replaceAllForItem('Steel Rods', [
+      { batchName: 'Primary Batch', godownName: 'Main Location', quantity: 198, unit: 'Nos' },
+    ]);
+
+    const result = readiness(
+      draft({ placeOfSupply: 'Delhi', items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500, godown: null }] }),
+    );
+
+    expect(result.ready).toBe(true);
+    expect(result.itemStock[0]?.resolvedBatch).toBe('Primary Batch');
+  });
+
+  it('is ready when requested quantity is within available stock', () => {
+    stockAvailabilityStore.replaceAllForItem('Steel Rods', [
+      { batchName: 'Primary Batch', godownName: 'Main Location', quantity: 100, unit: 'Kg' },
+    ]);
+
+    const result = readiness(
+      draft({ placeOfSupply: 'Delhi', items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500, godown: null }] }),
+    );
+
+    expect(result.ready).toBe(true);
+    expect(result.itemStock[0]?.availableQuantity).toBe(100);
+  });
+
+  it('blocks when requested quantity exceeds available stock', () => {
+    stockAvailabilityStore.replaceAllForItem('Steel Rods', [
+      { batchName: 'Primary Batch', godownName: 'Main Location', quantity: 50, unit: 'Kg' },
+    ]);
+
+    const result = readiness(
+      draft({ placeOfSupply: 'Delhi', items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500, godown: null }] }),
+    );
+
+    expect(result.ready).toBe(false);
+    expect(result.blockers).toContainEqual(
+      expect.objectContaining({ code: 'stock_insufficient', itemIndex: 0 }),
+    );
+  });
+
+  it('never automatically switches godowns, but reports other godowns with sufficient stock as candidates', () => {
+    stockAvailabilityStore.replaceAllForItem('Steel Rods', [
+      { batchName: 'Primary Batch', godownName: 'Main Location', quantity: 50, unit: 'Kg' },
+      { batchName: 'Primary Batch', godownName: 'Warehouse B', quantity: 500, unit: 'Kg' },
+    ]);
+
+    const result = readiness(
+      draft({ placeOfSupply: 'Delhi', items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500, godown: null }] }),
+    );
+
+    expect(result.ready).toBe(false);
+    // Still resolved to the requested/default godown — never silently switched.
+    expect(result.itemGodowns).toEqual([{ itemIndex: 0, godown: 'Main Location' }]);
+    expect(result.itemStock[0]?.alternativeGodowns).toEqual([
+      { godown: 'Warehouse B', availableQuantity: 500 },
+    ]);
+  });
+
+  it('fails closed on multiple batches for the same item + godown rather than guessing one', () => {
+    stockAvailabilityStore.replaceAllForItem('Steel Rods', [
+      { batchName: '1', godownName: 'Main Location', quantity: 50, unit: 'Kg' },
+      { batchName: '2', godownName: 'Main Location', quantity: 200, unit: 'Kg' },
+    ]);
+
+    const result = readiness(
+      draft({ placeOfSupply: 'Delhi', items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500, godown: null }] }),
+    );
+
+    expect(result.ready).toBe(false);
+    expect(result.blockers).toContainEqual(
+      expect.objectContaining({ code: 'stock_batch_ambiguous', itemIndex: 0 }),
+    );
+    expect(result.itemStock[0]?.resolvedBatch).toBeNull();
+  });
+
+  it('blocks on zero stock rather than treating it as available', () => {
+    stockAvailabilityStore.replaceAllForItem('Steel Rods', [
+      { batchName: 'Primary Batch', godownName: 'Main Location', quantity: 0, unit: 'Kg' },
+    ]);
+
+    const result = readiness(
+      draft({ placeOfSupply: 'Delhi', items: [{ itemName: 'Steel Rods', quantity: 1, rate: 500, godown: null }] }),
+    );
+
+    expect(result.ready).toBe(false);
+    expect(result.blockers).toContainEqual(
+      expect.objectContaining({ code: 'stock_insufficient', itemIndex: 0 }),
+    );
+  });
+
+  it('does not fuzzy-match the resolved stock item name — a near-miss finds no cached row', () => {
+    stockAvailabilityStore.replaceAllForItem('Steel Rods', [
+      { batchName: 'Primary Batch', godownName: 'Main Location', quantity: 1000, unit: 'Kg' },
+    ]);
+
+    const result = readiness(
+      draft({ placeOfSupply: 'Delhi', items: [{ itemName: 'Steel Rods', quantity: 1, rate: 1, godown: null }] }),
+      {
+        ...VALID_PHASE5,
+        items: [
+          {
+            itemName: 'Steel Rods',
+            // Phase 5 resolved a different, near-miss master name — the
+            // availability lookup must not treat this as the same item.
+            stockItemMatch: { status: 'exact', matchedName: 'Steel Rod', candidates: [] },
+            quantityValid: true,
+            rateValid: true,
+          },
+        ],
+      },
+    );
+
+    expect(result.ready).toBe(false);
+    expect(result.blockers).toContainEqual(
+      expect.objectContaining({ code: 'stock_data_missing', itemIndex: 0 }),
+    );
+  });
+
+  it('reports stale/missing cache data as a blocker, never as guessed-zero availability', () => {
+    // No stock_availability rows were ever synced for this item.
+    itemLedgerMappingStore.setMapping({
+      stockItemName: 'Untracked Item',
+      salesLedger: 'Sales',
+      purchaseLedger: 'Purchase',
+    });
+
+    const result = readiness(
+      draft({ placeOfSupply: 'Delhi', items: [{ itemName: 'Untracked Item', quantity: 1, rate: 1, godown: null }] }),
+      {
+        ...VALID_PHASE5,
+        items: [
+          {
+            itemName: 'Untracked Item',
+            stockItemMatch: { status: 'exact', matchedName: 'Untracked Item', candidates: [] },
+            quantityValid: true,
+            rateValid: true,
+          },
+        ],
+      },
+    );
+
+    expect(result.ready).toBe(false);
+    expect(result.blockers).toContainEqual(
+      expect.objectContaining({ code: 'stock_data_missing', itemIndex: 0 }),
+    );
+    expect(result.itemStock[0]?.resolvedBatch).toBeNull();
   });
 });
 

@@ -24,6 +24,7 @@ import type { GodownConfig, GstLedgerConfig } from '../config/index.ts';
 import { CONVERSATION_DRAFTS_TABLE, TALLY_POSTINGS_TABLE } from '../db/schema.ts';
 import { checkPostingReadiness } from '../gst/postingReadiness.ts';
 import type { ItemLedgerMappingStore } from '../gst/itemLedgerMapping.ts';
+import type { StockAvailabilityStore } from './stockAvailability.ts';
 import type { TransactionDraft } from '../llm/schema.ts';
 import type { DraftValidationResult } from '../validation/types.ts';
 import { buildSalesVoucherXml, parseImportResponse } from './postingXml.ts';
@@ -257,6 +258,7 @@ export interface PostConfirmedTransactionDeps {
   readonly gstConfig: GstLedgerConfig;
   readonly itemLedgerMappingStore: ItemLedgerMappingStore;
   readonly godownConfig: GodownConfig;
+  readonly stockAvailabilityStore: StockAvailabilityStore;
 }
 
 export interface PostConfirmedTransactionInput {
@@ -359,6 +361,7 @@ export async function postConfirmedTransaction(
       gstConfig: deps.gstConfig,
       itemLedgerMappingStore: deps.itemLedgerMappingStore,
       godownConfig: deps.godownConfig,
+      stockAvailabilityStore: deps.stockAvailabilityStore,
     },
     context.draft,
     context.validation,

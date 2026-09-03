@@ -11,14 +11,23 @@
 
 import { XMLParser } from 'fast-xml-parser';
 
-/** Build an ad-hoc COLLECTION export request. `fields` are Tally field names. */
+/**
+ * Build an ad-hoc COLLECTION export request. `fields` are Tally field names.
+ *
+ * `childOf`, when given, scopes the collection to one parent master's
+ * children — confirmed live as the only way to enumerate `Batch` records
+ * (`TYPE=Batch` with no `CHILDOF` returns zero rows even when batches exist;
+ * scoped to a specific stock item name, it returns them).
+ */
 export function buildCollectionRequest(options: {
   readonly collectionName: string;
   readonly masterType: string;
   readonly companyName: string;
   readonly fields: readonly string[];
+  readonly childOf?: string;
 }): string {
-  const { collectionName, masterType, companyName, fields } = options;
+  const { collectionName, masterType, companyName, fields, childOf } = options;
+  const childOfXml = childOf !== undefined ? `\n      <CHILDOF>${escapeXml(childOf)}</CHILDOF>` : '';
 
   return `<ENVELOPE>
  <HEADER>
@@ -36,7 +45,7 @@ export function buildCollectionRequest(options: {
    <TDL>
     <TDLMESSAGE>
      <COLLECTION NAME="${escapeXml(collectionName)}" ISINITIALIZE="Yes">
-      <TYPE>${escapeXml(masterType)}</TYPE>
+      <TYPE>${escapeXml(masterType)}</TYPE>${childOfXml}
       <FETCH>${fields.map(escapeXml).join(', ')}</FETCH>
      </COLLECTION>
     </TDLMESSAGE>

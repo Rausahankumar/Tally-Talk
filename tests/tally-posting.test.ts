@@ -7,6 +7,8 @@ import { CONVERSATION_DRAFTS_TABLE } from '../src/db/schema.ts';
 import { createItemLedgerMappingStore } from '../src/gst/itemLedgerMapping.ts';
 import type { ItemLedgerMappingStore } from '../src/gst/itemLedgerMapping.ts';
 import { createTallyMasterCache } from '../src/tally/cache.ts';
+import { createStockAvailabilityCache } from '../src/tally/stockAvailabilityCache.ts';
+import type { StockAvailabilityStore } from '../src/tally/stockAvailability.ts';
 import {
   PostingRejectedError,
   createPostingStore,
@@ -80,6 +82,7 @@ function voucherInput(): SalesVoucherInput {
         amount: 50000,
         ledgerAllocation: { ledgerName: 'Sales', amount: 50000 },
         godown: 'Main Location',
+        batchName: 'Primary Batch',
       },
     ],
     taxLedgerAllocations: [{ ledgerName: 'GST', amount: 9000 }],
@@ -115,12 +118,14 @@ let database: Database;
 let auditLog: AuditLog;
 let postingStore: PostingStore;
 let itemLedgerMappingStore: ItemLedgerMappingStore;
+let stockAvailabilityStore: StockAvailabilityStore;
 
 beforeEach(() => {
   database = createTestDatabase();
   auditLog = createAuditLog({ db: database.db, logger: silentLogger });
   postingStore = createPostingStore(database.db);
   itemLedgerMappingStore = createItemLedgerMappingStore(database.db);
+  stockAvailabilityStore = createStockAvailabilityCache({ db: database.db });
 
   // Masters and mapping the READY_* fixtures above depend on for a fully
   // ready checkPostingReadiness() result: CGST/SGST (Delhi == Delhi ->
@@ -139,6 +144,9 @@ beforeEach(() => {
     salesLedger: 'Sales',
     purchaseLedger: 'Purchase',
   });
+  stockAvailabilityStore.replaceAllForItem('Steel Rods', [
+    { batchName: 'Primary Batch', godownName: 'Main Location', quantity: 1000, unit: 'Kg' },
+  ]);
 });
 
 afterEach(() => {
@@ -160,6 +168,7 @@ function deps(client: TallyPostingClient): PostConfirmedTransactionDeps {
     gstConfig: GST_CONFIG,
     itemLedgerMappingStore,
     godownConfig: GODOWN_CONFIG,
+    stockAvailabilityStore,
   };
 }
 
@@ -533,6 +542,38 @@ describe('postConfirmedTransaction', () => {
       insertConfirmedDraft(database.db);
       // Simulate the godown having been renamed/removed in Tally since confirmation.
       createTallyMasterCache({ db: database.db }).replaceAll('Godown', []);
+      const client = scriptedClient({ outcome: 'posted', message: 'ok', tallyVoucherId: '1', raw: '' });
+      const importSpy = vi.spyOn(client, 'importVoucher');
+
+      await expect(
+        postConfirmedTransaction(deps(client), { draftVersionId: DRAFT_VERSION_ID, voucher: voucherInput() }),
+      ).rejects.toThrow(PostingRejectedError);
+
+      expect(importSpy).not.toHaveBeenCalled();
+    });
+
+    it('rejects posting when stock was sufficient at confirmation but has since dropped below what was requested', async () => {
+      insertConfirmedDraft(database.db);
+      // Simulate stock having moved (e.g. another sale) between confirmation and posting.
+      stockAvailabilityStore.replaceAllForItem('Steel Rods', [
+        { batchName: 'Primary Batch', godownName: 'Main Location', quantity: 10, unit: 'Kg' },
+      ]);
+      const client = scriptedClient({ outcome: 'posted', message: 'ok', tallyVoucherId: '1', raw: '' });
+      const importSpy = vi.spyOn(client, 'importVoucher');
+
+      await expect(
+        postConfirmedTransaction(deps(client), { draftVersionId: DRAFT_VERSION_ID, voucher: voucherInput() }),
+      ).rejects.toThrow(PostingRejectedError);
+
+      expect(importSpy).not.toHaveBeenCalled();
+    });
+
+    it('rejects posting when the batch has become ambiguous since confirmation', async () => {
+      insertConfirmedDraft(database.db);
+      stockAvailabilityStore.replaceAllForItem('Steel Rods', [
+        { batchName: '1', godownName: 'Main Location', quantity: 500, unit: 'Kg' },
+        { batchName: '2', godownName: 'Main Location', quantity: 500, unit: 'Kg' },
+      ]);
       const client = scriptedClient({ outcome: 'posted', message: 'ok', tallyVoucherId: '1', raw: '' });
       const importSpy = vi.spyOn(client, 'importVoucher');
 

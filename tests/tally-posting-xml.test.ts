@@ -17,6 +17,7 @@ function voucherInput(overrides: Partial<SalesVoucherInput> = {}): SalesVoucherI
         amount: 50000,
         ledgerAllocation: { ledgerName: 'Sales', amount: 50000 },
         godown: 'Main Location',
+        batchName: 'Primary Batch',
       },
     ],
     taxLedgerAllocations: [
@@ -101,8 +102,8 @@ describe('buildSalesVoucherXml', () => {
     const xml = buildSalesVoucherXml(
       voucherInput({
         items: [
-          { stockItemName: 'Cement', quantity: 1, unit: 'Bags', rate: 100, amount: 100, ledgerAllocation: { ledgerName: 'Sales', amount: 100 }, godown: 'Main Location' },
-          { stockItemName: 'Bricks', quantity: 2, unit: 'Nos', rate: 50, amount: 100, ledgerAllocation: { ledgerName: 'Sales', amount: 100 }, godown: 'Warehouse B' },
+          { stockItemName: 'Cement', quantity: 1, unit: 'Bags', rate: 100, amount: 100, ledgerAllocation: { ledgerName: 'Sales', amount: 100 }, godown: 'Main Location', batchName: 'Primary Batch' },
+          { stockItemName: 'Bricks', quantity: 2, unit: 'Nos', rate: 50, amount: 100, ledgerAllocation: { ledgerName: 'Sales', amount: 100 }, godown: 'Warehouse B', batchName: 'Primary Batch' },
         ],
         taxLedgerAllocations: [],
       }),
@@ -159,6 +160,7 @@ describe('buildSalesVoucherXml', () => {
               amount: 50000,
               ledgerAllocation: { ledgerName: 'Sales', amount: 50000 },
               godown: 'A & B Godown',
+              batchName: 'Primary Batch',
             },
           ],
         }),
@@ -171,15 +173,75 @@ describe('buildSalesVoucherXml', () => {
       const xml = buildSalesVoucherXml(
         voucherInput({
           items: [
-            { stockItemName: 'Cement', quantity: 1, unit: 'Bags', rate: 100, amount: 100, ledgerAllocation: { ledgerName: 'Sales', amount: 100 }, godown: 'Main Location' },
-            { stockItemName: 'Bricks', quantity: 2, unit: 'Nos', rate: 50, amount: 100, ledgerAllocation: { ledgerName: 'Sales', amount: 100 }, godown: 'Warehouse B' },
-            { stockItemName: 'Sand', quantity: 3, unit: 'Nos', rate: 30, amount: 90, ledgerAllocation: { ledgerName: 'Sales', amount: 90 }, godown: 'Warehouse B' },
+            { stockItemName: 'Cement', quantity: 1, unit: 'Bags', rate: 100, amount: 100, ledgerAllocation: { ledgerName: 'Sales', amount: 100 }, godown: 'Main Location', batchName: 'Primary Batch' },
+            { stockItemName: 'Bricks', quantity: 2, unit: 'Nos', rate: 50, amount: 100, ledgerAllocation: { ledgerName: 'Sales', amount: 100 }, godown: 'Warehouse B', batchName: 'Primary Batch' },
+            { stockItemName: 'Sand', quantity: 3, unit: 'Nos', rate: 30, amount: 90, ledgerAllocation: { ledgerName: 'Sales', amount: 90 }, godown: 'Warehouse B', batchName: '2' },
           ],
         }),
       );
 
       const godowns = [...xml.matchAll(/<GODOWNNAME>([^<]+)<\/GODOWNNAME>/g)].map((m) => m[1]);
       expect(godowns).toEqual(['Main Location', 'Warehouse B', 'Warehouse B']);
+    });
+  });
+
+  describe('batch name (backend-resolved, never hardcoded)', () => {
+    it('uses the caller-supplied batch name, not a hardcoded "Primary Batch"', () => {
+      const xml = buildSalesVoucherXml(
+        voucherInput({
+          items: [
+            {
+              stockItemName: 'Apple',
+              quantity: 10,
+              unit: 'KG',
+              rate: 1000,
+              amount: 10000,
+              ledgerAllocation: { ledgerName: 'Sales', amount: 10000 },
+              godown: 'Main Location',
+              batchName: '1',
+            },
+          ],
+        }),
+      );
+
+      const batchBlock = /<BATCHALLOCATIONS\.LIST>([\s\S]*?)<\/BATCHALLOCATIONS\.LIST>/.exec(xml)?.[1];
+      expect(batchBlock).toContain('<BATCHNAME>1</BATCHNAME>');
+      expect(xml).not.toContain('<BATCHNAME>Primary Batch</BATCHNAME>');
+    });
+
+    it('gives each item its own independent batch name', () => {
+      const xml = buildSalesVoucherXml(
+        voucherInput({
+          items: [
+            { stockItemName: 'Apple', quantity: 10, unit: 'KG', rate: 1000, amount: 10000, ledgerAllocation: { ledgerName: 'Sales', amount: 10000 }, godown: 'Main Location', batchName: '1' },
+            { stockItemName: 'AMD Ryzen  Processor', quantity: 2, unit: 'Nos', rate: 2500, amount: 5000, ledgerAllocation: { ledgerName: 'Sales', amount: 5000 }, godown: 'Main Location', batchName: 'Primary Batch' },
+          ],
+        }),
+      );
+
+      const batches = [...xml.matchAll(/<BATCHNAME>([^<]+)<\/BATCHNAME>/g)].map((m) => m[1]);
+      expect(batches).toEqual(['1', 'Primary Batch']);
+    });
+
+    it('escapes the batch name', () => {
+      const xml = buildSalesVoucherXml(
+        voucherInput({
+          items: [
+            {
+              stockItemName: 'Steel Rods',
+              quantity: 100,
+              unit: 'Kg',
+              rate: 500,
+              amount: 50000,
+              ledgerAllocation: { ledgerName: 'Sales', amount: 50000 },
+              godown: 'Main Location',
+              batchName: 'Lot & Batch <2>',
+            },
+          ],
+        }),
+      );
+
+      expect(xml).toContain('<BATCHNAME>Lot &amp; Batch &lt;2&gt;</BATCHNAME>');
     });
   });
 });

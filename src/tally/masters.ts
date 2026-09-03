@@ -23,7 +23,10 @@ export interface MasterDefinition {
  */
 export const MASTER_DEFINITIONS: readonly MasterDefinition[] = [
   { type: 'Ledger', fields: ['NAME', 'PARENT', 'OPENINGBALANCE', 'ISBILLWISEON'] },
-  { type: 'StockItem', fields: ['NAME', 'PARENT', 'BASEUNITS'] },
+  // ISBATCHWISEON confirmed live and fetchable — cached for future use;
+  // stock availability resolution itself (src/tally/stockAvailability.ts)
+  // works from the availability cache directly and does not branch on it.
+  { type: 'StockItem', fields: ['NAME', 'PARENT', 'BASEUNITS', 'ISBATCHWISEON'] },
   { type: 'Godown', fields: ['NAME', 'PARENT'] },
   { type: 'Unit', fields: ['NAME'] },
   { type: 'VoucherType', fields: ['NAME', 'PARENT'] },

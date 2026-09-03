@@ -16,9 +16,15 @@
  * created in TallyPrime with an explicit godown per item, then exported, shows
  * `GODOWNNAME` nested inside each inventory entry's own `BATCHALLOCATIONS.LIST`
  * — never at voucher level, never directly under `ALLINVENTORYENTRIES.LIST`.
- * `BATCHNAME` ("Primary Batch") appeared alongside it in every real sample
- * captured for this company (batch tracking is on for its stock items), so it
- * is reproduced here too rather than omitted and left to guesswork.
+ *
+ * `BATCHNAME` is never hardcoded here. An earlier version of this module
+ * assumed every item's batch was named "Primary Batch" — real Tally data
+ * proved that wrong: a batch-tracked item's real recorded batch was named
+ * `"1"`, not "Primary Batch" (only non-batch-tracked items actually use
+ * Tally's implicit "Primary Batch"). `batchName` is a required field on
+ * `TallyVoucherLineItem` precisely so the backend-resolved real batch (from
+ * `checkPostingReadiness`'s cached availability lookup) is what reaches the
+ * XML — never guessed here.
  */
 
 export interface TallyLedgerAllocation {
@@ -49,6 +55,12 @@ export interface TallyVoucherLineItem {
    * building a `SalesVoucherInput` at all.
    */
   readonly godown: string;
+  /**
+   * The exact batch resolved by `checkPostingReadiness` from the cached
+   * stock availability rows for this item + godown. Never a default or
+   * guessed value — see the module doc.
+   */
+  readonly batchName: string;
 }
 
 export interface SalesVoucherInput {
@@ -99,7 +111,7 @@ function buildBatchAllocationEntry(item: TallyVoucherLineItem): string {
   return `
       <BATCHALLOCATIONS.LIST>
        <GODOWNNAME>${escapeXml(item.godown)}</GODOWNNAME>
-       <BATCHNAME>Primary Batch</BATCHNAME>
+       <BATCHNAME>${escapeXml(item.batchName)}</BATCHNAME>
        <AMOUNT>${formatAmount(item.amount)}</AMOUNT>
        <ACTUALQTY>${formatQuantity(item.quantity, item.unit)}</ACTUALQTY>
        <BILLEDQTY>${formatQuantity(item.quantity, item.unit)}</BILLEDQTY>

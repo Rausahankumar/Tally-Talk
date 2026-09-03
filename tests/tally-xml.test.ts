@@ -40,6 +40,43 @@ describe('buildCollectionRequest', () => {
     expect(xml).toContain('A &amp; B &quot;Traders&quot; &lt;Ltd&gt;');
     expect(xml).not.toContain('<Ltd>');
   });
+
+  it('omits CHILDOF when not given', () => {
+    const xml = buildCollectionRequest({
+      collectionName: 'C',
+      masterType: 'Batch',
+      companyName: 'Acme Ltd',
+      fields: ['NAME'],
+    });
+
+    expect(xml).not.toContain('CHILDOF');
+  });
+
+  it('includes CHILDOF, scoping the collection to one parent, when given', () => {
+    const xml = buildCollectionRequest({
+      collectionName: 'C',
+      masterType: 'Batch',
+      companyName: 'Acme Ltd',
+      fields: ['NAME', 'PARENT', 'GODOWNNAME', 'CLOSINGBALANCE'],
+      childOf: 'Apple',
+    });
+
+    expect(xml).toContain('<CHILDOF>Apple</CHILDOF>');
+    // Must appear inside the COLLECTION, before FETCH, per the confirmed live shape.
+    expect(xml.indexOf('<CHILDOF>Apple</CHILDOF>')).toBeLessThan(xml.indexOf('<FETCH>'));
+  });
+
+  it('escapes the CHILDOF value', () => {
+    const xml = buildCollectionRequest({
+      collectionName: 'C',
+      masterType: 'Batch',
+      companyName: 'Acme Ltd',
+      fields: ['NAME'],
+      childOf: 'A & B Item',
+    });
+
+    expect(xml).toContain('<CHILDOF>A &amp; B Item</CHILDOF>');
+  });
 });
 
 describe('parseCollectionResponse — against a real captured TallyPrime response', () => {

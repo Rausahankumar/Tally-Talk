@@ -15,6 +15,7 @@ import { createAuditLog } from './audit/log.ts';
 import { createConversationStore } from './conversation/store.ts';
 import { openDatabase } from './db/sqlite.ts';
 import { createItemLedgerMappingStore } from './gst/itemLedgerMapping.ts';
+import { createStockAvailabilityCache } from './tally/stockAvailabilityCache.ts';
 import { createAnthropicClient } from './llm/client.ts';
 import { createTelegramClient } from './channels/telegram/client.ts';
 import { consoleLogger } from './logger.ts';
@@ -69,6 +70,7 @@ function main(): void {
     db: database.db,
     conversationStore: createConversationStore(database.db),
     itemLedgerMappingStore: createItemLedgerMappingStore(database.db),
+    stockAvailabilityStore: createStockAvailabilityCache({ db: database.db }),
     auditLog: createAuditLog({ db: database.db, logger: consoleLogger }),
     logger: consoleLogger,
   });

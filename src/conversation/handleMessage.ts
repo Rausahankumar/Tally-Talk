@@ -15,6 +15,7 @@ import type { TelegramClient } from '../channels/telegram/client.ts';
 import type { GodownConfig, GstLedgerConfig } from '../config/index.ts';
 import { checkPostingReadiness, isOnlyMissingPlaceOfSupply } from '../gst/postingReadiness.ts';
 import type { ItemLedgerMappingStore } from '../gst/itemLedgerMapping.ts';
+import type { StockAvailabilityStore } from '../tally/stockAvailability.ts';
 import type { LLMClient } from '../llm/client.ts';
 import { LLMConnectionError, LLMResponseError } from '../llm/client.ts';
 import { DraftValidationError } from '../llm/schema.ts';
@@ -41,6 +42,7 @@ export interface MessageHandlerDeps {
   readonly gstConfig: GstLedgerConfig;
   readonly itemLedgerMappingStore: ItemLedgerMappingStore;
   readonly godownConfig: GodownConfig;
+  readonly stockAvailabilityStore: StockAvailabilityStore;
 }
 
 export interface IncomingTextTurn {
@@ -134,6 +136,7 @@ export async function handleIncomingTextMessage(
             gstConfig: deps.gstConfig,
             itemLedgerMappingStore: deps.itemLedgerMappingStore,
             godownConfig: deps.godownConfig,
+            stockAvailabilityStore: deps.stockAvailabilityStore,
           },
           candidateDraft,
           validation,

@@ -17,6 +17,7 @@ import type { GodownConfig, GstLedgerConfig } from '../config/index.ts';
 import type { TransactionDraft } from '../llm/schema.ts';
 import type { DraftValidationResult } from '../validation/types.ts';
 import { godownExistsExact } from '../tally/godownExistence.ts';
+import type { GodownAvailability, StockAvailabilityStore } from '../tally/stockAvailability.ts';
 import { ledgerExistsExact } from './ledgerExistence.ts';
 import type { ItemLedgerMappingStore } from './itemLedgerMapping.ts';
 import { isRecognizedState } from './states.ts';
@@ -32,7 +33,10 @@ export type PostingBlockCode =
   | 'item_ledger_mapping_missing'
   | 'item_ledger_not_found_in_masters'
   | 'godown_missing'
-  | 'godown_not_found_in_masters';
+  | 'godown_not_found_in_masters'
+  | 'stock_data_missing'
+  | 'stock_batch_ambiguous'
+  | 'stock_insufficient';
 
 export interface PostingBlocker {
   readonly code: PostingBlockCode;
@@ -52,6 +56,16 @@ export interface LineItemGodown {
   readonly godown: string | null;
 }
 
+export interface LineItemStock {
+  readonly itemIndex: number;
+  /** The exact batch name resolved from the cached availability row. `null` if unresolved. */
+  readonly resolvedBatch: string | null;
+  /** The quantity available in that resolved batch/godown. `null` if unresolved. */
+  readonly availableQuantity: number | null;
+  /** Other godowns with enough total stock, offered only when this item's resolved godown did not have enough. */
+  readonly alternativeGodowns: readonly GodownAvailability[];
+}
+
 export interface PostingReadinessResult {
   readonly ready: boolean;
   /** The place of supply actually used — either stated or the configured default. `null` if unresolved. */
@@ -59,6 +73,7 @@ export interface PostingReadinessResult {
   readonly gstTreatment: GstTreatment | null;
   readonly itemLedgers: readonly LineItemLedgers[];
   readonly itemGodowns: readonly LineItemGodown[];
+  readonly itemStock: readonly LineItemStock[];
   readonly blockers: readonly PostingBlocker[];
 }
 
@@ -67,6 +82,7 @@ export interface PostingReadinessDeps {
   readonly gstConfig: GstLedgerConfig;
   readonly itemLedgerMappingStore: ItemLedgerMappingStore;
   readonly godownConfig: GodownConfig;
+  readonly stockAvailabilityStore: StockAvailabilityStore;
 }
 
 /**
@@ -97,6 +113,7 @@ export function checkPostingReadiness(
       gstTreatment: null,
       itemLedgers: [],
       itemGodowns: [],
+      itemStock: [],
       blockers: [
         { code: 'phase5_validation_failed', message: 'The transaction has not yet passed basic validation.' },
       ],
@@ -183,7 +200,16 @@ export function checkPostingReadiness(
   // from Phase 5's stock item matching. Each item is resolved on its own —
   // items may share a godown or each name a different one; neither is an
   // error (per the real captured Tally evidence this mirrors).
-  const itemGodowns: LineItemGodown[] = draft.items.map((item, itemIndex) => {
+  //
+  // Stock resolution runs immediately after, for the same item, only once a
+  // godown is actually resolved: batch and closing quantity are looked up
+  // from the cached (item, godown) -> batch rows confirmed live via
+  // TYPE=Batch/CHILDOF. Never guessed: zero rows blocks as missing data, more
+  // than one row blocks as ambiguous (no rule chooses between real batches).
+  const itemGodowns: LineItemGodown[] = [];
+  const itemStock: LineItemStock[] = [];
+
+  draft.items.forEach((item, itemIndex) => {
     const effectiveGodown = item.godown ?? deps.godownConfig.defaultGodown;
 
     if (effectiveGodown === null) {
@@ -192,7 +218,9 @@ export function checkPostingReadiness(
         message: `No godown was stated for "${item.itemName}", and no default godown is configured.`,
         itemIndex,
       });
-      return { itemIndex, godown: null };
+      itemGodowns.push({ itemIndex, godown: null });
+      itemStock.push({ itemIndex, resolvedBatch: null, availableQuantity: null, alternativeGodowns: [] });
+      return;
     }
 
     if (!godownExistsExact(deps.db, effectiveGodown)) {
@@ -201,10 +229,68 @@ export function checkPostingReadiness(
         message: `Godown "${effectiveGodown}" for "${item.itemName}" was not found in TallyPrime.`,
         itemIndex,
       });
-      return { itemIndex, godown: null };
+      itemGodowns.push({ itemIndex, godown: null });
+      itemStock.push({ itemIndex, resolvedBatch: null, availableQuantity: null, alternativeGodowns: [] });
+      return;
     }
 
-    return { itemIndex, godown: effectiveGodown };
+    itemGodowns.push({ itemIndex, godown: effectiveGodown });
+
+    // The exact resolved master name, from Phase 5 matching — same source
+    // the ledger-mapping lookup above uses, never the raw draft text.
+    const resolvedItemName = phase5Validation.items[itemIndex]?.stockItemMatch.matchedName ?? null;
+    const requestedQuantity = item.quantity;
+
+    if (resolvedItemName === null || requestedQuantity === null) {
+      // Defensive only — Phase 5 already guarantees both once isValid is true.
+      itemStock.push({ itemIndex, resolvedBatch: null, availableQuantity: null, alternativeGodowns: [] });
+      return;
+    }
+
+    const rows = deps.stockAvailabilityStore.getAvailability(resolvedItemName, effectiveGodown);
+
+    if (rows.length === 0) {
+      blockers.push({
+        code: 'stock_data_missing',
+        message: `No stock availability data is cached for "${resolvedItemName}" in godown "${effectiveGodown}".`,
+        itemIndex,
+      });
+      itemStock.push({ itemIndex, resolvedBatch: null, availableQuantity: null, alternativeGodowns: [] });
+      return;
+    }
+
+    if (rows.length > 1) {
+      blockers.push({
+        code: 'stock_batch_ambiguous',
+        message: `Multiple batches of "${resolvedItemName}" exist in godown "${effectiveGodown}"; the batch cannot be resolved automatically.`,
+        itemIndex,
+      });
+      itemStock.push({ itemIndex, resolvedBatch: null, availableQuantity: null, alternativeGodowns: [] });
+      return;
+    }
+
+    const row = rows[0]!;
+
+    if (requestedQuantity > row.quantity) {
+      const alternativeGodowns = deps.stockAvailabilityStore.getGodownsWithSufficientStock(
+        resolvedItemName,
+        requestedQuantity,
+        effectiveGodown,
+      );
+      const alternativesText =
+        alternativeGodowns.length > 0
+          ? ` Sufficient stock is available in: ${alternativeGodowns.map((g) => `${g.godown} (${g.availableQuantity} ${row.unit})`).join(', ')}.`
+          : '';
+      blockers.push({
+        code: 'stock_insufficient',
+        message: `Only ${row.quantity} ${row.unit} of "${resolvedItemName}" is available in godown "${effectiveGodown}", but ${requestedQuantity} was requested.${alternativesText}`,
+        itemIndex,
+      });
+      itemStock.push({ itemIndex, resolvedBatch: row.batchName, availableQuantity: row.quantity, alternativeGodowns });
+      return;
+    }
+
+    itemStock.push({ itemIndex, resolvedBatch: row.batchName, availableQuantity: row.quantity, alternativeGodowns: [] });
   });
 
   return {
@@ -213,6 +299,7 @@ export function checkPostingReadiness(
     gstTreatment,
     itemLedgers,
     itemGodowns,
+    itemStock,
     blockers,
   };
 }
