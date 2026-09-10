@@ -7,6 +7,9 @@
  * exactly one row for a deployment with one company open, with real,
  * populated `NAME`/`STATENAME` fields. `GSTREGISTRATIONNUMBER` is a real
  * field name but was empty on the verified instance — never assumed present.
+ * `GUID` is also real and populated (confirmed live) — cached for future
+ * duplicate-name disambiguation, same as on every other master type; never
+ * used to change resolution behaviour here.
  *
  * Two entry points, for the two places this is needed:
  *   - `discoverCompany` — a live, read-only Tally query. Used once by the
@@ -22,7 +25,7 @@
  * however many companies are open in Tally), never silently picked.
  */
 import { readCachedMasters } from './cache.js';
-export const COMPANY_FIELDS = ['NAME', 'STATENAME', 'GSTREGISTRATIONNUMBER'];
+export const COMPANY_FIELDS = ['NAME', 'STATENAME', 'GSTREGISTRATIONNUMBER', 'GUID'];
 export class CompanyResolutionError extends Error {
   constructor(reason) {
     super(`Could not resolve exactly one Tally company: ${reason}`);
@@ -44,7 +47,11 @@ function resolveOne(records, sourceDescription) {
   if (!name) {
     throw new CompanyResolutionError(`the company record has no NAME (${sourceDescription})`);
   }
-  return { name, state: record.STATENAME ?? '' };
+  // guid is additive: cached (see syncCli.js) for future duplicate-name
+  // disambiguation, same as every other master type — never consulted by
+  // resolution/matching logic itself, so an absent value here (a record that
+  // predates the GUID field being fetched) is never a resolution failure.
+  return { name, state: record.STATENAME ?? '', guid: record.GUID ?? null };
 }
 /**
  * Live discovery, with no company name known yet — the client used here must

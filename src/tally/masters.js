@@ -56,8 +56,11 @@ export const MASTER_DEFINITIONS = [
     ],
     parse: parseStockItemCollectionResponse,
   },
-  { type: 'Godown', fields: ['NAME', 'PARENT'] },
-  { type: 'Unit', fields: ['NAME'] },
+  // GUID confirmed live on Godown and Unit too (same field, same purpose as
+  // on Ledger/StockItem above) — cached for future duplicate-name
+  // disambiguation, never used to change resolution or posting XML.
+  { type: 'Godown', fields: ['NAME', 'PARENT', 'GUID'] },
+  { type: 'Unit', fields: ['NAME', 'GUID'] },
   { type: 'VoucherType', fields: ['NAME', 'PARENT'] },
   // Company is deliberately not here: discovering it is what determines the
   // SVCURRENTCOMPANY every other query in this list (and this sync itself)
