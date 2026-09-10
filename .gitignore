@@ -9,6 +9,9 @@ dist/
 .env.*
 !.env.example
 
+# Postman environment holding real local secrets (see the .example.json template)
+postman/environments/local.postman_environment.json
+
 # Local database (SQLite audit log)
 *.sqlite
 *.sqlite-journal

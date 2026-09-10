@@ -24,6 +24,27 @@ describe('ItemLedgerMappingStore', () => {
       stockItemName: 'ACC Cement OPC 43 Grade',
       salesLedger: 'Sales @ 18%',
       purchaseLedger: 'Purchase @ 18%',
+      salesRate: null,
+      purchaseRate: null,
+      gstPercent: null,
+    });
+  });
+  it('stores and returns an optional trusted rate/GST default alongside the ledgers', () => {
+    store.setMapping({
+      stockItemName: 'Apple',
+      salesLedger: 'Sales',
+      purchaseLedger: 'Purchase',
+      salesRate: 1000,
+      purchaseRate: 800,
+      gstPercent: 18,
+    });
+    expect(store.getMapping('Apple')).toEqual({
+      stockItemName: 'Apple',
+      salesLedger: 'Sales',
+      purchaseLedger: 'Purchase',
+      salesRate: 1000,
+      purchaseRate: 800,
+      gstPercent: 18,
     });
   });
   it('looks up by exact name only, not fuzzily', () => {
@@ -50,6 +71,9 @@ describe('ItemLedgerMappingStore', () => {
       stockItemName: 'Steel Rods',
       salesLedger: 'Sales B',
       purchaseLedger: 'Purchase B',
+      salesRate: null,
+      purchaseRate: null,
+      gstPercent: null,
     });
     const count = database.db
       .prepare('SELECT COUNT(*) c FROM item_ledger_mappings WHERE stock_item_name = ?')

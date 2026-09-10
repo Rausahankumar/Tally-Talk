@@ -7,7 +7,11 @@
  * posting come after the user acts on the preview this produces.
  */
 import { buildCallbackData } from '../channels/telegram/types.js';
-import { checkPostingReadiness, isOnlyMissingPlaceOfSupply } from '../gst/postingReadiness.js';
+import {
+  checkPostingReadiness,
+  findGodownSelectionNeeded,
+  isOnlyMissingPlaceOfSupply,
+} from '../gst/postingReadiness.js';
 import { LLMConnectionError, LLMResponseError } from '../llm/client.js';
 import { DraftValidationError } from '../llm/schema.js';
 import { validateTransactionDraft } from '../validation/validateDraft.js';
@@ -79,7 +83,12 @@ export async function handleIncomingTextMessage(deps, turn) {
     });
     candidateDraft = existing !== null ? mergeDraft(existing.draft, extracted) : extracted;
   }
-  const validation = validateTransactionDraft(deps.db, candidateDraft);
+  const validation = validateTransactionDraft(deps.db, candidateDraft, deps.itemLedgerMappingStore);
+  // The canonical draft from here on: rate/GST filled in from trusted
+  // per-item configuration wherever the user left them unstated, the same
+  // way a resolved party or item name already flows back onto the draft via
+  // `applyClarification`.
+  candidateDraft = validation.resolvedDraft;
   deps.auditLog.record({
     correlationId: turn.correlationId,
     type: 'validation.completed',
@@ -98,6 +107,8 @@ export async function handleIncomingTextMessage(deps, turn) {
             db: deps.db,
             gstConfig: deps.gstConfig,
             itemLedgerMappingStore: deps.itemLedgerMappingStore,
+            companyRevenueLedgerDefaultsStore: deps.companyRevenueLedgerDefaultsStore,
+            companyName: deps.companyName,
             godownConfig: deps.godownConfig,
             stockAvailabilityStore: deps.stockAvailabilityStore,
           },
@@ -121,6 +132,15 @@ export async function handleIncomingTextMessage(deps, turn) {
       // The one gap here is something the user can actually answer —
       // deterministically resolved from their next reply, no LLM call.
       pending = { kind: 'place_of_supply' };
+    } else if (!readiness.ready) {
+      const godownSelection = findGodownSelectionNeeded(readiness);
+      if (godownSelection !== null) {
+        pending = {
+          kind: 'godown',
+          itemIndex: godownSelection.itemIndex,
+          candidates: godownSelection.candidates,
+        };
+      }
     }
   }
   const ready = validation.isValid && (readiness === null || readiness.ready);
@@ -143,7 +163,7 @@ export async function handleIncomingTextMessage(deps, turn) {
   if (status === 'ready_for_confirmation') {
     await deps.telegram.sendMessage(
       turn.chatId,
-      buildPreviewText(candidateDraft, validation, readiness?.gstTreatment ?? null),
+      buildPreviewText(candidateDraft, validation, readiness),
       [
         { text: 'Confirm', callbackData: buildCallbackData('confirm', saved.draftVersionId) },
         { text: 'Cancel', callbackData: buildCallbackData('cancel', saved.draftVersionId) },

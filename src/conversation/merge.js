@@ -11,16 +11,43 @@
  * message actually stated overrides the old value; a field the new message
  * left blank keeps whatever was already known.
  */
+/**
+ * Merge one follow-up's line items onto the existing ones.
+ *
+ * When the counts match, each position is merged field-by-field — the same
+ * "incoming states it, else keep what was known" rule every other field
+ * already uses — rather than replacing the whole item wholesale. This is
+ * what lets "Rate is 1000 each apple" fill in just the rate on the item
+ * already on file instead of wiping out its already-known quantity, while a
+ * genuine full restatement (every field given again) still behaves exactly
+ * as before, since every field the incoming extraction states wins anyway.
+ *
+ * A different item count is treated as a real change in what's being bought
+ * or sold — an item added, removed, or swapped for something else entirely —
+ * and the incoming items replace the old ones outright, unchanged from
+ * before this function merged fields individually.
+ */
+function mergeItems(existingItems, incomingItems) {
+  if (incomingItems.length === 0) return existingItems;
+  if (incomingItems.length !== existingItems.length) return incomingItems;
+  return incomingItems.map((incomingItem, index) => {
+    const existingItem = existingItems[index];
+    return {
+      itemName: incomingItem.itemName,
+      quantity: incomingItem.quantity ?? existingItem.quantity,
+      rate: incomingItem.rate ?? existingItem.rate,
+      godown: incomingItem.godown ?? existingItem.godown,
+    };
+  });
+}
 export function mergeDraft(existing, incoming) {
   return {
     voucherType: incoming.voucherType !== 'unknown' ? incoming.voucherType : existing.voucherType,
     partyName: incoming.partyName ?? existing.partyName,
-    // A follow-up that mentions items at all is taken as the current, complete
-    // statement of what is being bought/sold — restating quantities/rates is
-    // the natural way a user corrects them ("actually 200 bags, not 100").
-    items: incoming.items.length > 0 ? incoming.items : existing.items,
+    items: mergeItems(existing.items, incoming.items),
     gstPercent: incoming.gstPercent ?? existing.gstPercent,
     placeOfSupply: incoming.placeOfSupply ?? existing.placeOfSupply,
+    date: incoming.date ?? existing.date,
     missingFields: incoming.missingFields,
     ambiguityNote: incoming.ambiguityNote,
   };

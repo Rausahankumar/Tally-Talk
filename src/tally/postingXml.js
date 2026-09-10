@@ -146,6 +146,7 @@ export function parseImportResponse(xml) {
   const createdMatch = /<CREATED>\s*(\d+)\s*<\/CREATED>/i.exec(xml);
   const alteredMatch = /<ALTERED>\s*(\d+)\s*<\/ALTERED>/i.exec(xml);
   const errorsMatch = /<ERRORS>\s*(\d+)\s*<\/ERRORS>/i.exec(xml);
+  const exceptionsMatch = /<EXCEPTIONS>\s*(\d+)\s*<\/EXCEPTIONS>/i.exec(xml);
   const lineErrorMatch = /<LINEERROR>([\s\S]*?)<\/LINEERROR>/i.exec(xml);
   const vchIdMatch = /<LASTVCHID>\s*(\d+)\s*<\/LASTVCHID>/i.exec(xml);
   if (createdMatch === null && alteredMatch === null && errorsMatch === null) {
@@ -158,9 +159,13 @@ export function parseImportResponse(xml) {
     };
   }
   const errors = errorsMatch !== null ? Number(errorsMatch[1]) : 0;
+  const exceptions = exceptionsMatch !== null ? Number(exceptionsMatch[1]) : 0;
   const created = createdMatch !== null ? Number(createdMatch[1]) : 0;
   const altered = alteredMatch !== null ? Number(alteredMatch[1]) : 0;
-  if (errors > 0) {
+  // A real captured response rejected a voucher (CREATED=0) via EXCEPTIONS
+  // and a LINEERROR while leaving ERRORS at 0 — that shape is a failure, not
+  // "neither success nor error", even though ERRORS alone says otherwise.
+  if (errors > 0 || (exceptions > 0 && lineErrorMatch !== null)) {
     return {
       outcome: 'failed',
       message: lineErrorMatch?.[1]?.trim() ?? `Tally reported ${errors} error(s)`,

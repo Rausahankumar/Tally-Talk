@@ -62,6 +62,14 @@ export function applyClarification(draft, pending, resolvedValue) {
   if (pending.kind === 'place_of_supply') {
     return { ...draft, placeOfSupply: resolvedValue };
   }
+  if (pending.kind === 'godown') {
+    return {
+      ...draft,
+      items: draft.items.map((item, index) =>
+        index === pending.itemIndex ? { ...item, godown: resolvedValue } : item,
+      ),
+    };
+  }
   return {
     ...draft,
     items: draft.items.map((item, index) =>

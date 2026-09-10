@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { createItemLedgerMappingStore } from '../src/gst/itemLedgerMapping.js';
 import { createTallyMasterCache } from '../src/tally/cache.js';
 import { validateTransactionDraft } from '../src/validation/validateDraft.js';
 import { createTestDatabase } from './helpers/testDatabase.js';
@@ -8,10 +9,18 @@ beforeEach(() => {
   database = createTestDatabase();
   cache = createTallyMasterCache({ db: database.db });
   cache.replaceAll('Ledger', [
+    // Sales parties are Sundry Creditors, purchase parties are Sundry
+    // Debtors under this deployment's corrected voucher-type/group mapping
+    // (see masterLookup.js). "Ramesh Kumar Enterprises"/"Ramesh Traders"
+    // serve the purchase-voucher tests below; "Ramesh Exports"/"Ramesh
+    // Imports" are a separate pair serving the sales-ambiguity test, so
+    // neither scenario's fixture depends on the other's group.
     { NAME: 'Ramesh Kumar Enterprises', PARENT: 'Sundry Debtors' },
     { NAME: 'Ramesh Traders', PARENT: 'Sundry Debtors' },
+    { NAME: 'Ramesh Exports', PARENT: 'Sundry Creditors' },
+    { NAME: 'Ramesh Imports', PARENT: 'Sundry Creditors' },
     { NAME: 'Suresh & Sons', PARENT: 'Sundry Creditors' },
-    { NAME: 'Balaji Retail Store', PARENT: 'Sundry Debtors' },
+    { NAME: 'Balaji Retail Store', PARENT: 'Sundry Creditors' },
   ]);
   cache.replaceAll('StockItem', [
     { NAME: 'ACC Cement OPC 43 Grade', PARENT: 'Building Materials', BASEUNITS: 'Bags' },
@@ -63,6 +72,26 @@ describe('validateTransactionDraft - a fully valid draft', () => {
     );
     expect(result.isValid).toBe(true);
   });
+  it('leaves parsedDate null and raises no issue when the draft has no date', () => {
+    const result = validateTransactionDraft(database.db, validDraft());
+    expect(result.parsedDate).toBeNull();
+    expect(result.issues).toEqual([]);
+  });
+});
+describe('validateTransactionDraft - explicit date', () => {
+  it('parses an explicit ISO date into the corresponding calendar date', () => {
+    const result = validateTransactionDraft(database.db, validDraft({ date: '2026-09-01' }));
+    expect(result.isValid).toBe(true);
+    expect(result.parsedDate).toEqual(new Date(2026, 8, 1));
+  });
+  it('rejects a date that does not correspond to a real calendar day', () => {
+    const result = validateTransactionDraft(database.db, validDraft({ date: '2026-02-30' }));
+    expect(result.isValid).toBe(false);
+    expect(result.parsedDate).toBeNull();
+    expect(result.issues).toContainEqual(
+      expect.objectContaining({ code: 'invalid_date' }),
+    );
+  });
 });
 describe('validateTransactionDraft - exact matches', () => {
   it('resolves an exact ledger match', () => {
@@ -104,7 +133,8 @@ describe('validateTransactionDraft - required fields', () => {
   });
   it('flags a missing GST percent', () => {
     const result = validateTransactionDraft(database.db, validDraft({ gstPercent: null }));
-    expect(result.gstPercentValid).toBeNull();
+    expect(result.gstPercentValid).toBe(false);
+    expect(result.resolvedGstPercent).toBeNull();
     expect(result.issues).toContainEqual(expect.objectContaining({ code: 'missing_gst_percent' }));
   });
 });
@@ -159,9 +189,7 @@ describe('validateTransactionDraft - ambiguous matches', () => {
     expect(result.isValid).toBe(false);
     expect(result.partyMatch?.status).toBe('ambiguous');
     const issue = result.issues.find((i) => i.code === 'party_ambiguous');
-    expect(issue?.candidates).toEqual(
-      expect.arrayContaining(['Ramesh Kumar Enterprises', 'Ramesh Traders']),
-    );
+    expect(issue?.candidates).toEqual(expect.arrayContaining(['Ramesh Exports', 'Ramesh Imports']));
   });
   it('reports stock_item_ambiguous instead of guessing between two similar items', () => {
     const result = validateTransactionDraft(
@@ -249,6 +277,227 @@ describe('validateTransactionDraft - GST rate', () => {
       const result = validateTransactionDraft(database.db, validDraft({ gstPercent: rate }));
       expect(result.gstPercentValid).toBe(true);
     }
+  });
+});
+describe('validateTransactionDraft - resolving rate/GST from trusted configuration', () => {
+  let itemLedgerMappingStore;
+  beforeEach(() => {
+    itemLedgerMappingStore = createItemLedgerMappingStore(database.db);
+  });
+  it('leaves rate/GST unresolved (and asks) when no mapping store is passed at all — existing callers unaffected', () => {
+    const result = validateTransactionDraft(
+      database.db,
+      validDraft({ items: [{ itemName: 'Steel Rods', quantity: 10, rate: null, godown: null }], gstPercent: null }),
+    );
+    expect(result.items[0]?.resolvedRate).toBeNull();
+    expect(result.resolvedGstPercent).toBeNull();
+    expect(result.issues).toContainEqual(expect.objectContaining({ code: 'missing_rate' }));
+    expect(result.issues).toContainEqual(expect.objectContaining({ code: 'missing_gst_percent' }));
+  });
+  it('resolves a missing rate from the trusted per-item mapping', () => {
+    itemLedgerMappingStore.setMapping({
+      stockItemName: 'Steel Rods',
+      salesLedger: 'Sales',
+      purchaseLedger: 'Purchase',
+      salesRate: 550,
+    });
+    const result = validateTransactionDraft(
+      database.db,
+      validDraft({ items: [{ itemName: 'Steel Rods', quantity: 10, rate: null, godown: null }] }),
+      itemLedgerMappingStore,
+    );
+    expect(result.items[0]?.rateValid).toBe(true);
+    expect(result.items[0]?.resolvedRate).toBe(550);
+    expect(result.resolvedDraft.items[0]?.rate).toBe(550);
+    expect(result.issues.some((i) => i.code === 'missing_rate')).toBe(false);
+  });
+  it('an explicitly stated rate overrides the configured default', () => {
+    itemLedgerMappingStore.setMapping({
+      stockItemName: 'Steel Rods',
+      salesLedger: 'Sales',
+      purchaseLedger: 'Purchase',
+      salesRate: 550,
+    });
+    const result = validateTransactionDraft(
+      database.db,
+      validDraft({ items: [{ itemName: 'Steel Rods', quantity: 10, rate: 700, godown: null }] }),
+      itemLedgerMappingStore,
+    );
+    expect(result.items[0]?.resolvedRate).toBe(700);
+    expect(result.resolvedDraft.items[0]?.rate).toBe(700);
+  });
+  it('does not invent a rate when neither stated nor configured', () => {
+    itemLedgerMappingStore.setMapping({
+      stockItemName: 'Steel Rods',
+      salesLedger: 'Sales',
+      purchaseLedger: 'Purchase',
+      // no salesRate configured
+    });
+    const result = validateTransactionDraft(
+      database.db,
+      validDraft({ items: [{ itemName: 'Steel Rods', quantity: 10, rate: null, godown: null }] }),
+      itemLedgerMappingStore,
+    );
+    expect(result.items[0]?.rateValid).toBe(false);
+    expect(result.items[0]?.resolvedRate).toBeNull();
+    expect(result.resolvedDraft.items[0]?.rate).toBeNull();
+    expect(result.issues).toContainEqual(expect.objectContaining({ code: 'missing_rate' }));
+  });
+  it('resolves a missing GST percent from the trusted per-item mapping', () => {
+    itemLedgerMappingStore.setMapping({
+      stockItemName: 'Steel Rods',
+      salesLedger: 'Sales',
+      purchaseLedger: 'Purchase',
+      gstPercent: 18,
+    });
+    const result = validateTransactionDraft(
+      database.db,
+      validDraft({ gstPercent: null }),
+      itemLedgerMappingStore,
+    );
+    expect(result.gstPercentValid).toBe(true);
+    expect(result.resolvedGstPercent).toBe(18);
+    expect(result.resolvedDraft.gstPercent).toBe(18);
+    expect(result.issues.some((i) => i.code === 'missing_gst_percent')).toBe(false);
+  });
+  it('an explicitly stated GST percent is validated, not silently replaced by a configured default', () => {
+    itemLedgerMappingStore.setMapping({
+      stockItemName: 'Steel Rods',
+      salesLedger: 'Sales',
+      purchaseLedger: 'Purchase',
+      gstPercent: 12,
+    });
+    const result = validateTransactionDraft(
+      database.db,
+      validDraft({ gstPercent: 18 }),
+      itemLedgerMappingStore,
+    );
+    expect(result.resolvedGstPercent).toBe(18);
+    expect(result.resolvedDraft.gstPercent).toBe(18);
+  });
+});
+describe('validateTransactionDraft - resolving rate/GST from Tally-cached history', () => {
+  // Real numbers, captured live against this project's own TallyPrime
+  // instance (see tests/fixtures/tally/stockitem-gst-pricing-response.xml
+  // for the raw XML these were parsed from) — never invented for this test.
+  const ORANGE_GST_HISTORY = [
+    { applicableFrom: '2025-04-01', states: [{ state: 'Any', cgst: 9, sgst: 9, igst: 18 }] },
+  ];
+  const ORANGE_PRICE_HISTORY = [{ date: '2026-04-01', rate: 1000, unit: 'KG' }];
+  function cacheOrange(overrides = {}) {
+    cache.replaceAll('StockItem', [
+      { NAME: 'ACC Cement OPC 43 Grade', PARENT: 'Building Materials', BASEUNITS: 'Bags' },
+      { NAME: 'Cement Bags', PARENT: 'Building Materials', BASEUNITS: 'Bags' },
+      { NAME: 'Steel Rods', PARENT: 'Building Materials', BASEUNITS: 'Kg' },
+      {
+        NAME: 'Orange',
+        PARENT: 'Primary',
+        BASEUNITS: 'KG',
+        gstRateHistory: ORANGE_GST_HISTORY,
+        standardPriceHistory: ORANGE_PRICE_HISTORY,
+        ...overrides,
+      },
+    ]);
+  }
+  function orangeDraft(overrides = {}) {
+    return validDraft({
+      items: [{ itemName: 'Orange', quantity: 5, rate: null, godown: null }],
+      gstPercent: null,
+      date: '2026-09-01',
+      ...overrides,
+    });
+  }
+  it('resolves GST from Tally when neither explicit nor configured GST is present', () => {
+    cacheOrange();
+    const result = validateTransactionDraft(database.db, orangeDraft());
+    expect(result.gstPercentValid).toBe(true);
+    expect(result.resolvedGstPercent).toBe(18);
+    expect(result.issues.some((i) => i.code === 'missing_gst_percent')).toBe(false);
+  });
+  it('chooses the correct effective-dated GST entry, ignoring an earlier one that no longer applies', () => {
+    cacheOrange({
+      gstRateHistory: [
+        { applicableFrom: '2020-01-01', states: [{ state: 'Any', cgst: 2.5, sgst: 2.5, igst: 5 }] },
+        { applicableFrom: '2025-04-01', states: [{ state: 'Any', cgst: 9, sgst: 9, igst: 18 }] },
+      ],
+    });
+    const result = validateTransactionDraft(database.db, orangeDraft());
+    expect(result.resolvedGstPercent).toBe(18);
+  });
+  it('ignores a future-dated GST entry — ie transaction date is before it takes effect', () => {
+    cacheOrange({
+      gstRateHistory: [{ applicableFrom: '2030-01-01', states: [{ state: 'Any', cgst: 9, sgst: 9, igst: 18 }] }],
+    });
+    const result = validateTransactionDraft(database.db, orangeDraft());
+    expect(result.resolvedGstPercent).toBeNull();
+    expect(result.issues).toContainEqual(expect.objectContaining({ code: 'missing_gst_percent' }));
+  });
+  it('fails closed on a GST record whose CGST+SGST does not equal IGST, rather than trusting either number', () => {
+    cacheOrange({
+      gstRateHistory: [
+        { applicableFrom: '2025-04-01', states: [{ state: 'Any', cgst: 9, sgst: 9, igst: 12 }] },
+      ],
+    });
+    const result = validateTransactionDraft(database.db, orangeDraft());
+    expect(result.resolvedGstPercent).toBeNull();
+    expect(result.issues).toContainEqual(expect.objectContaining({ code: 'missing_gst_percent' }));
+  });
+  it('resolves rate from Tally Standard Price when neither explicit nor configured rate is present', () => {
+    cacheOrange();
+    const result = validateTransactionDraft(database.db, orangeDraft());
+    expect(result.items[0]?.rateValid).toBe(true);
+    expect(result.items[0]?.resolvedRate).toBe(1000);
+    expect(result.issues.some((i) => i.code === 'missing_rate')).toBe(false);
+  });
+  it('ignores a future-dated Standard Price entry', () => {
+    cacheOrange({ standardPriceHistory: [{ date: '2030-01-01', rate: 1000, unit: 'KG' }] });
+    const result = validateTransactionDraft(database.db, orangeDraft());
+    expect(result.items[0]?.resolvedRate).toBeNull();
+    expect(result.issues).toContainEqual(expect.objectContaining({ code: 'missing_rate' }));
+  });
+  it('an explicit rate beats both configured and Tally Standard Price', () => {
+    cacheOrange();
+    const store = createItemLedgerMappingStore(database.db);
+    store.setMapping({ stockItemName: 'Orange', salesLedger: 'Sales', purchaseLedger: 'Purchase', salesRate: 100 });
+    const result = validateTransactionDraft(
+      database.db,
+      orangeDraft({ items: [{ itemName: 'Orange', quantity: 5, rate: 100, godown: null }] }),
+      store,
+    );
+    expect(result.items[0]?.resolvedRate).toBe(100);
+  });
+  it('a configured sales_rate beats Tally Standard Price — the ₹100 vs ₹1000 real-world case', () => {
+    cacheOrange();
+    const store = createItemLedgerMappingStore(database.db);
+    store.setMapping({ stockItemName: 'Orange', salesLedger: 'Sales', purchaseLedger: 'Purchase', salesRate: 100 });
+    const result = validateTransactionDraft(database.db, orangeDraft(), store);
+    expect(result.items[0]?.resolvedRate).toBe(100); // not Tally's 1000
+  });
+  it('a configured gst_percent is still used when Tally has no GST record at all for the item', () => {
+    cache.replaceAll('StockItem', [
+      { NAME: 'Steel Rods', PARENT: 'Building Materials', BASEUNITS: 'Kg' }, // no gstRateHistory
+    ]);
+    const store = createItemLedgerMappingStore(database.db);
+    store.setMapping({ stockItemName: 'Steel Rods', salesLedger: 'Sales', purchaseLedger: 'Purchase', gstPercent: 12 });
+    const result = validateTransactionDraft(database.db, validDraft({ gstPercent: null }), store);
+    expect(result.resolvedGstPercent).toBe(12);
+  });
+  it('Tally GST beats a configured gst_percent when both are available', () => {
+    cacheOrange();
+    const store = createItemLedgerMappingStore(database.db);
+    store.setMapping({ stockItemName: 'Orange', salesLedger: 'Sales', purchaseLedger: 'Purchase', gstPercent: 5 });
+    const result = validateTransactionDraft(database.db, orangeDraft(), store);
+    expect(result.resolvedGstPercent).toBe(18); // Tally's rate, not the configured 5
+  });
+  it('existing missing-rate/missing-GST behaviour is unaffected for an item with no Tally history at all', () => {
+    const result = validateTransactionDraft(
+      database.db,
+      validDraft({ items: [{ itemName: 'Steel Rods', quantity: 10, rate: null, godown: null }], gstPercent: null }),
+    );
+    expect(result.items[0]?.resolvedRate).toBeNull();
+    expect(result.resolvedGstPercent).toBeNull();
+    expect(result.issues).toContainEqual(expect.objectContaining({ code: 'missing_rate' }));
+    expect(result.issues).toContainEqual(expect.objectContaining({ code: 'missing_gst_percent' }));
   });
 });
 describe('validateTransactionDraft - multiple issues at once', () => {

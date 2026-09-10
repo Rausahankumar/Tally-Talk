@@ -17,9 +17,6 @@ const USER_ID = 111;
 const DRAFT_VERSION_ID = 'draft-version-abc';
 const GST_CONFIG = {
   companyState: 'Delhi',
-  cgstLedger: 'CGST',
-  sgstLedger: 'SGST',
-  igstLedger: 'IGST',
   defaultPlaceOfSupply: null,
 };
 const GODOWN_CONFIG = {
@@ -109,9 +106,9 @@ beforeEach(() => {
   // ready checkPostingReadiness() result: CGST/SGST (Delhi == Delhi ->
   // intrastate) and the "Sales" ledger the default voucherInput() credits.
   createTallyMasterCache({ db: database.db }).replaceAll('Ledger', [
-    { NAME: 'CGST', PARENT: 'Duties & Taxes' },
-    { NAME: 'SGST', PARENT: 'Duties & Taxes' },
-    { NAME: 'IGST', PARENT: 'Duties & Taxes' },
+    { NAME: 'CGST', PARENT: 'Duties & Taxes', TAXTYPE: 'GST', GSTDUTYHEAD: 'CGST' },
+    { NAME: 'SGST', PARENT: 'Duties & Taxes', TAXTYPE: 'GST', GSTDUTYHEAD: 'SGST/UTGST' },
+    { NAME: 'IGST', PARENT: 'Duties & Taxes', TAXTYPE: 'GST', GSTDUTYHEAD: 'IGST' },
     { NAME: 'Sales', PARENT: 'Sales Accounts' },
   ]);
   createTallyMasterCache({ db: database.db }).replaceAll('Godown', [
@@ -556,6 +553,18 @@ describe('postConfirmedTransaction', () => {
     it('rejects posting when the item ledger mapping was removed after confirmation', async () => {
       insertConfirmedDraft(database.db);
       database.db.exec("DELETE FROM item_ledger_mappings WHERE stock_item_name = 'Steel Rods'");
+      // Without a manual mapping, readiness now tries to auto-resolve a
+      // single unambiguous Sales Accounts ledger (postingReadiness.js
+      // resolveDefaultRevenueLedger) — adding a second one here keeps this
+      // test's real intent (mapping gone -> fail closed) genuine rather than
+      // accidentally passing via that new fallback.
+      createTallyMasterCache({ db: database.db }).replaceAll('Ledger', [
+        { NAME: 'CGST', PARENT: 'Duties & Taxes', TAXTYPE: 'GST', GSTDUTYHEAD: 'CGST' },
+        { NAME: 'SGST', PARENT: 'Duties & Taxes', TAXTYPE: 'GST', GSTDUTYHEAD: 'SGST/UTGST' },
+        { NAME: 'IGST', PARENT: 'Duties & Taxes', TAXTYPE: 'GST', GSTDUTYHEAD: 'IGST' },
+        { NAME: 'Sales', PARENT: 'Sales Accounts' },
+        { NAME: 'Another Sales Ledger', PARENT: 'Sales Accounts' },
+      ]);
       const client = scriptedClient({
         outcome: 'posted',
         message: 'ok',
@@ -590,7 +599,7 @@ describe('postConfirmedTransaction', () => {
       ).rejects.toThrow(PostingRejectedError);
       expect(importSpy).not.toHaveBeenCalled();
     });
-    it('rejects posting when stock was sufficient at confirmation but has since dropped below what was requested', async () => {
+    it('still posts when stock was sufficient at confirmation but has since dropped below what was requested — stock is a warning, never a hard blocker', async () => {
       insertConfirmedDraft(database.db);
       // Simulate stock having moved (e.g. another sale) between confirmation and posting.
       stockAvailabilityStore.replaceAllForItem('Steel Rods', [
@@ -603,13 +612,12 @@ describe('postConfirmedTransaction', () => {
         raw: '',
       });
       const importSpy = vi.spyOn(client, 'importVoucher');
-      await expect(
-        postConfirmedTransaction(deps(client), {
-          draftVersionId: DRAFT_VERSION_ID,
-          voucher: voucherInput(),
-        }),
-      ).rejects.toThrow(PostingRejectedError);
-      expect(importSpy).not.toHaveBeenCalled();
+      const result = await postConfirmedTransaction(deps(client), {
+        draftVersionId: DRAFT_VERSION_ID,
+        voucher: voucherInput(),
+      });
+      expect(result.status).toBe('posted');
+      expect(importSpy).toHaveBeenCalled();
     });
     it('rejects posting when the batch has become ambiguous since confirmation', async () => {
       insertConfirmedDraft(database.db);

@@ -12,6 +12,7 @@ export const CONVERSATION_DRAFTS_TABLE = 'conversation_drafts';
 export const TALLY_POSTINGS_TABLE = 'tally_postings';
 export const ITEM_LEDGER_MAPPINGS_TABLE = 'item_ledger_mappings';
 export const STOCK_AVAILABILITY_TABLE = 'stock_availability';
+export const COMPANY_REVENUE_LEDGER_DEFAULTS_TABLE = 'company_revenue_ledger_defaults';
 /** Render a string list as a SQL `IN (...)` value list. */
 function sqlList(values) {
   return values.map((value) => `'${value}'`).join(', ');
@@ -338,6 +339,50 @@ CREATE TABLE ${STOCK_AVAILABILITY_TABLE} (
 CREATE INDEX idx_stock_availability_item_godown
   ON ${STOCK_AVAILABILITY_TABLE} (stock_item_name, godown_name);
 `;
+/**
+ * Migration 10 — optional trusted defaults on the per-item mapping: a
+ * standard sales/purchase rate and GST rate, used only when the user did not
+ * state one and only after the stated-or-nothing path has already been
+ * checked (`validateDraft.js`). Nullable: a stock item with no configured
+ * default simply has nothing to resolve, and falls back to asking the user
+ * exactly as before this migration existed.
+ */
+const MIGRATION_10 = `
+ALTER TABLE ${ITEM_LEDGER_MAPPINGS_TABLE} ADD COLUMN sales_rate REAL;
+ALTER TABLE ${ITEM_LEDGER_MAPPINGS_TABLE} ADD COLUMN purchase_rate REAL;
+ALTER TABLE ${ITEM_LEDGER_MAPPINGS_TABLE} ADD COLUMN gst_percent REAL;
+`;
+/**
+ * Migration 11 — company-level default Sales/Purchase revenue ledger.
+ *
+ * `item_ledger_mappings` (migration 7) answers "which ledger does *this
+ * specific stock item* use" and must be configured per item. This table
+ * answers a different, higher-level question once per company — "which
+ * ledger does an *ordinary* sale/purchase use here, absent any item-specific
+ * override" — so a brand-new stock item never needs its own mapping row
+ * before it can be sold, as long as this company's own accounting practice is
+ * itself unambiguous (see DECISIONS.md and postingReadiness.js's resolution
+ * order). `company_name` is the primary key, not a stock item, because this
+ * project already treats "the one Tally company currently open" as the unit
+ * of configuration (see tally/company.js) — a second company, if ever
+ * connected, gets its own row rather than sharing this one.
+ *
+ * The GUID columns are nullable and never the primary lookup key: Tally
+ * ledgers are still resolved by name (matching the only proven-working,
+ * live-verified posting XML shape), but a captured GUID lets a future
+ * duplicate-name case be told apart from the ledger this was actually
+ * configured for, rather than only ever compared by name.
+ */
+const MIGRATION_11 = `
+CREATE TABLE ${COMPANY_REVENUE_LEDGER_DEFAULTS_TABLE} (
+  company_name         TEXT PRIMARY KEY,
+  sales_ledger         TEXT,
+  sales_ledger_guid    TEXT,
+  purchase_ledger      TEXT,
+  purchase_ledger_guid TEXT,
+  updated_at           TEXT NOT NULL
+);
+`;
 /** Ordered migrations. Append to this list; never edit an applied entry. */
 const MIGRATIONS = [
   MIGRATION_1,
@@ -349,6 +394,8 @@ const MIGRATIONS = [
   MIGRATION_7,
   MIGRATION_8,
   MIGRATION_9,
+  MIGRATION_10,
+  MIGRATION_11,
 ];
 export const LATEST_SCHEMA_VERSION = MIGRATIONS.length;
 function currentVersion(db) {

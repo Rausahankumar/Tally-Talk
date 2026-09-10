@@ -59,7 +59,11 @@ export function createTallyClient(options) {
       // Confirmed live: TallyPrime's HTTP export responds in plain UTF-8, unlike
       // its UTF-16LE file exports — text() decodes correctly without help.
       const xml = await response.text();
-      return parseCollectionResponse(xml, masterType.toUpperCase());
+      // Callers needing a specialised shape (e.g. StockItem's GST/pricing
+      // `.LIST` parsing — see xml.js) pass their own parser; every other
+      // caller keeps today's plain-field flattening, unchanged.
+      const parse = exportOptions?.parse ?? ((text) => parseCollectionResponse(text, masterType.toUpperCase()));
+      return parse(xml);
     },
   };
 }

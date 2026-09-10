@@ -39,6 +39,24 @@ export class LLMResponseError extends Error {
 function isToolUseBlock(block) {
   return typeof block === 'object' && block !== null && block.type === 'tool_use';
 }
+/**
+ * Node's fetch() throws a generic "fetch failed" TypeError; the actual
+ * network-level reason (DNS, TLS, connection refused, timeout) lives one
+ * level down in `.cause`, which the plain LLMConnectionError message never
+ * surfaces. This module has no injected logger, so the detail is recorded
+ * directly rather than silently lost.
+ */
+function describeFetchFailure(error) {
+  const cause = error?.cause;
+  return {
+    message: error instanceof Error ? error.message : String(error),
+    cause: cause instanceof Error ? cause.message : (cause ?? null),
+    code: error?.code ?? cause?.code ?? null,
+    errno: error?.errno ?? cause?.errno ?? null,
+    syscall: error?.syscall ?? cause?.syscall ?? null,
+    hostname: error?.hostname ?? cause?.hostname ?? null,
+  };
+}
 export function createAnthropicClient(options) {
   const fetchImpl = options.fetchImpl ?? globalThis.fetch;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
@@ -80,6 +98,7 @@ export function createAnthropicClient(options) {
           signal: controller.signal,
         });
       } catch (error) {
+        console.error('Anthropic fetch failed', describeFetchFailure(error));
         throw new LLMConnectionError(error);
       } finally {
         clearTimeout(timeout);

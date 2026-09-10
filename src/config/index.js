@@ -90,6 +90,12 @@ function parseDatabasePath(env, problems) {
 }
 const DEFAULT_TALLY_HOST = '127.0.0.1';
 const DEFAULT_TALLY_PORT = 9000;
+/**
+ * `companyName` is deliberately absent here — it is discovered dynamically
+ * from Tally itself (`tally/company.js`), never a hardcoded/required env
+ * value. Callers that need it read it from the discovered company, not from
+ * this config object.
+ */
 function parseTally(env, problems) {
   const host = env.TALLY_HOST?.trim() || DEFAULT_TALLY_HOST;
   let port = DEFAULT_TALLY_PORT;
@@ -102,8 +108,7 @@ function parseTally(env, problems) {
       port = parsed;
     }
   }
-  const companyName = readRequired(env, 'TALLY_COMPANY_NAME', problems) ?? '';
-  return { host, port, companyName };
+  return { host, port };
 }
 const DEFAULT_LLM_MODEL = 'claude-sonnet-5';
 function parseLLM(env, problems) {
@@ -120,33 +125,26 @@ function parseLLM(env, problems) {
   const workspaceId = env.ANTHROPIC_WORKSPACE_ID?.trim() || null;
   return { provider: 'anthropic', apiKey, model, workspaceId };
 }
+/**
+ * `companyState` and the three GST ledger names are deliberately absent
+ * here: company state is discovered from Tally (`tally/company.js`), and
+ * CGST/SGST/IGST ledgers are resolved dynamically per transaction from
+ * `TAXTYPE`/`GSTDUTYHEAD` on the cached Ledger masters
+ * (`gst/gstLedgerResolution.js`) — none of these are configuration this
+ * project asks an operator to hardcode per client. `defaultPlaceOfSupply`
+ * stays: Place of Supply is a transaction fact with no Tally master source at
+ * all (confirmed by investigation), so an explicit default remains the only
+ * safe non-Tally-derived option, and only when an operator deliberately
+ * configures one.
+ */
 function parseGst(env, problems) {
-  const companyState = readRequired(env, 'COMPANY_STATE', problems) ?? '';
-  if (companyState !== '' && !isRecognizedState(companyState)) {
-    problems.push(
-      `COMPANY_STATE "${companyState}" is not a recognised Indian state or union territory`,
-    );
-  }
-  const cgstLedger = readRequired(env, 'CGST_LEDGER', problems) ?? '';
-  const sgstLedger = readRequired(env, 'SGST_LEDGER', problems) ?? '';
-  const igstLedger = readRequired(env, 'IGST_LEDGER', problems) ?? '';
   const rawDefault = env.DEFAULT_PLACE_OF_SUPPLY?.trim() || null;
   if (rawDefault !== null && !isRecognizedState(rawDefault)) {
     problems.push(
       `DEFAULT_PLACE_OF_SUPPLY "${rawDefault}" is not a recognised Indian state or union territory`,
     );
   }
-  return {
-    companyState,
-    cgstLedger,
-    sgstLedger,
-    igstLedger,
-    defaultPlaceOfSupply: rawDefault,
-  };
-}
-function parseGodown(env) {
-  const rawDefault = env.DEFAULT_GODOWN?.trim() || null;
-  return { defaultGodown: rawDefault };
+  return { defaultPlaceOfSupply: rawDefault };
 }
 function parsePort(env, problems) {
   const raw = env.PORT?.trim();
@@ -177,7 +175,6 @@ export function loadConfig(env = process.env) {
     tally: parseTally(env, problems),
     llm: parseLLM(env, problems),
     gst: parseGst(env, problems),
-    godown: parseGodown(env),
   };
   if (problems.length > 0) throw new ConfigError(problems);
   return config;

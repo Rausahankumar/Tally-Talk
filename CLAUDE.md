@@ -61,6 +61,74 @@ Work in phases. For every significant phase:
 10. Update `PROJECT_STATUS.md`.
 11. Update `PROJECT_PLAN.md` / `DECISIONS.md` only if required.
 
+
+
+Technology Stack:
+- Node.js
+- Express.js
+- JavaScript (not TypeScript)
+- SQLite
+- Telegram Bot API
+- Anthropic API
+- TallyPrime XML/HTTP integration
+
+
+
+## Token and Execution Efficiency
+
+Prioritize efficient execution.
+
+Do not narrate implementation step by step.
+
+Work silently unless:
+- blocked by missing information
+- user approval is required
+- a significant unexpected problem changes the approved scope
+
+Do not send progress messages such as:
+- "Now inspecting..."
+- "Now verifying..."
+- "Now implementing..."
+- "Quick sanity check..."
+- "Confirming..."
+
+Do not perform broad discovery.
+
+Use the existing codebase, tests, documentation, and known project architecture as the primary source of truth.
+
+Only inspect additional files, environment state, or external systems when a specific unknown blocks the current implementation.
+
+Avoid redundant verification.
+
+Do not:
+- typecheck after every file
+- repeatedly inspect unchanged files
+- perform manual sanity checks already covered by automated tests
+- run live end-to-end tests for every phase
+- repeatedly run the full test suite unless failures require it
+
+Preferred workflow:
+
+1. Inspect only the files directly relevant to the current task.
+2. Implement the complete approved logical unit.
+3. Run relevant tests.
+4. Fix failures.
+5. Run the full test suite once.
+6. Run typecheck once.
+7. Update only necessary documentation.
+8. Review the final diff once.
+9. Commit if required.
+
+Prefer existing patterns and libraries already present in the project.
+
+Do not over-engineer edge cases outside the approved scope.
+
+Keep final reports concise and limited to:
+- implementation completed
+- tests run
+- blockers or limitations
+- commit hash
+
 **Never start the next significant phase without explicit user confirmation.**
 Stop after each phase and report: completed work, tests run and results, git
 status, documentation updates, recommended next phase.

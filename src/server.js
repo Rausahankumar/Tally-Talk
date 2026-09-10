@@ -10,7 +10,9 @@ import { TELEGRAM_WEBHOOK_PATH, createApp } from './app.js';
 import { createAuditLog } from './audit/log.js';
 import { createConversationStore } from './conversation/store.js';
 import { openDatabase } from './db/sqlite.js';
+import { createCompanyRevenueLedgerDefaultsStore } from './gst/companyRevenueLedgerDefaults.js';
 import { createItemLedgerMappingStore } from './gst/itemLedgerMapping.js';
+import { CompanyResolutionError, resolveCachedCompany } from './tally/company.js';
 import { createStockAvailabilityCache } from './tally/stockAvailabilityCache.js';
 import { createPostingStore, createTallyPostingClient } from './tally/posting.js';
 import { createAnthropicClient } from './llm/client.js';
@@ -21,6 +23,25 @@ function loadConfigOrExit() {
     return loadConfig();
   } catch (error) {
     if (error instanceof ConfigError) {
+      consoleLogger.error(error.message);
+      process.exit(1);
+    }
+    throw error;
+  }
+}
+/**
+ * The server never talks to Tally directly except for the final posting
+ * write (see posting.js) — company identity/state is read from the cache
+ * `npm run tally:sync` already populated, never queried live here, and never
+ * a hardcoded value. Fails closed at startup, the same way a missing
+ * TELEGRAM_BOT_TOKEN already does — nothing works without knowing exactly
+ * one company to operate against.
+ */
+function resolveCompanyOrExit(db) {
+  try {
+    return resolveCachedCompany(db);
+  } catch (error) {
+    if (error instanceof CompanyResolutionError) {
       consoleLogger.error(error.message);
       process.exit(1);
     }
@@ -52,8 +73,15 @@ function main() {
   const config = loadConfigOrExit();
   const database = openDatabase(config.databasePath, consoleLogger);
   consoleLogger.info('Audit database ready', { path: config.databasePath });
+  const company = resolveCompanyOrExit(database.db);
+  consoleLogger.info('Tally company resolved from cache', {
+    name: company.name,
+    state: company.state,
+  });
   const app = createApp({
     config,
+    companyName: company.name,
+    companyState: company.state,
     telegram: createTelegramClient(config.telegram.botToken),
     llm: createAnthropicClient({
       apiKey: config.llm.apiKey,
@@ -63,6 +91,7 @@ function main() {
     db: database.db,
     conversationStore: createConversationStore(database.db),
     itemLedgerMappingStore: createItemLedgerMappingStore(database.db),
+    companyRevenueLedgerDefaultsStore: createCompanyRevenueLedgerDefaultsStore(database.db),
     stockAvailabilityStore: createStockAvailabilityCache({ db: database.db }),
     postingStore: createPostingStore(database.db),
     postingClient: createTallyPostingClient({ host: config.tally.host, port: config.tally.port }),

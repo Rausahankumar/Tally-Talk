@@ -85,6 +85,38 @@ describe('getGodownsWithSufficientStock', () => {
     expect(store.getGodownsWithSufficientStock('Steel Rods', 1, 'Main Location')).toEqual([]);
   });
 });
+describe('getAllGodownsWithRecordedStock', () => {
+  it('returns every godown with any recorded row, regardless of quantity', () => {
+    store.replaceAllForItem('Steel Rods', [
+      { batchName: 'Primary Batch', godownName: 'Main Location', quantity: 1000, unit: 'Kg' },
+      { batchName: 'Primary Batch', godownName: 'Warehouse B', quantity: 10, unit: 'Kg' },
+    ]);
+    expect(store.getAllGodownsWithRecordedStock('Steel Rods')).toEqual([
+      { godown: 'Main Location', availableQuantity: 1000 },
+      { godown: 'Warehouse B', availableQuantity: 10 },
+    ]);
+  });
+  it('includes a godown whose recorded quantity is zero or negative — never excluded for insufficiency', () => {
+    store.replaceAllForItem('Steel Rods', [
+      { batchName: 'Primary Batch', godownName: 'Main Location', quantity: -20, unit: 'Kg' },
+    ]);
+    expect(store.getAllGodownsWithRecordedStock('Steel Rods')).toEqual([
+      { godown: 'Main Location', availableQuantity: -20 },
+    ]);
+  });
+  it('sums multiple batches within one godown', () => {
+    store.replaceAllForItem('Steel Rods', [
+      { batchName: '1', godownName: 'Warehouse B', quantity: 40, unit: 'Kg' },
+      { batchName: '2', godownName: 'Warehouse B', quantity: 40, unit: 'Kg' },
+    ]);
+    expect(store.getAllGodownsWithRecordedStock('Steel Rods')).toEqual([
+      { godown: 'Warehouse B', availableQuantity: 80 },
+    ]);
+  });
+  it('returns an empty array when nothing is recorded for the item anywhere', () => {
+    expect(store.getAllGodownsWithRecordedStock('Nonexistent Item')).toEqual([]);
+  });
+});
 describe('replaceAllForItem', () => {
   it('replaces every prior row for the item, not just adding to them', () => {
     store.replaceAllForItem('Apple', [

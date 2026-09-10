@@ -106,10 +106,17 @@ export function buildSalesVoucherInput(deps, draft, validation, readiness) {
     amount: roundMoney(totalGstAmount * ledger.share),
   }));
   const now = deps.now ?? (() => new Date());
+  // An explicit, validated user-stated date takes priority; only fall back to
+  // "now" when the user never stated one (see Phase 5's `validateDate`).
+  // `validation` may have round-tripped through JSON storage between Phase 5
+  // and here (the confirmed draft is persisted and re-read before posting),
+  // which turns a `Date` into a plain ISO string — wrapping in `new Date(...)`
+  // normalises either shape without changing the value.
+  const voucherDate = validation.parsedDate != null ? new Date(validation.parsedDate) : now();
   return {
     ok: true,
     voucher: {
-      date: now(),
+      date: voucherDate,
       companyName: deps.companyName,
       partyLedgerName: partyLedgerName,
       items: lineItems,

@@ -4,9 +4,14 @@ import {
   TallyResponseError,
   buildCollectionRequest,
   parseCollectionResponse,
+  parseStockItemCollectionResponse,
 } from '../src/tally/xml.js';
 const REAL_LEDGER_RESPONSE = readFileSync(
   new URL('./fixtures/tally/ledger-collection-response.xml', import.meta.url),
+  'utf8',
+);
+const REAL_STOCKITEM_GST_PRICING_RESPONSE = readFileSync(
+  new URL('./fixtures/tally/stockitem-gst-pricing-response.xml', import.meta.url),
   'utf8',
 );
 describe('buildCollectionRequest', () => {
@@ -23,6 +28,19 @@ describe('buildCollectionRequest', () => {
     expect(xml).toContain('<SVCURRENTCOMPANY>Acme Ltd</SVCURRENTCOMPANY>');
     expect(xml).toContain('<TYPE>Ledger</TYPE>');
     expect(xml).toContain('<FETCH>NAME, PARENT</FETCH>');
+  });
+  it('omits SVCURRENTCOMPANY entirely when no company name is given — needed for company discovery itself', () => {
+    // Confirmed live: Tally still returns the single open company's data
+    // when SVCURRENTCOMPANY is left out of the request entirely (not an
+    // empty value — the tag absent). This is what makes discovering the
+    // company possible without already knowing its name (tally/company.js).
+    const xml = buildCollectionRequest({
+      collectionName: 'TallyTalk_CompanyProbe',
+      masterType: 'Company',
+      fields: ['NAME', 'STATENAME'],
+    });
+    expect(xml).not.toContain('SVCURRENTCOMPANY');
+    expect(xml).toContain('<TYPE>Company</TYPE>');
   });
   it('escapes XML special characters in the company name', () => {
     const xml = buildCollectionRequest({
@@ -148,5 +166,62 @@ describe('parseCollectionResponse — edge cases', () => {
   });
   it('throws on malformed XML rather than returning a partial result', () => {
     expect(() => parseCollectionResponse('<ENVELOPE><BODY', 'LEDGER')).toThrow(TallyResponseError);
+  });
+});
+describe('parseStockItemCollectionResponse — against a real captured TallyPrime response', () => {
+  it('still flattens every plain field exactly like parseCollectionResponse', () => {
+    const rows = parseStockItemCollectionResponse(REAL_STOCKITEM_GST_PRICING_RESPONSE);
+    const apple = rows.find((r) => r.NAME === 'Apple');
+    expect(apple).toMatchObject({ NAME: 'Apple', RESERVEDNAME: '' });
+  });
+  it('returns an empty gstRateHistory/standardPriceHistory/standardCostHistory for an item with no data, never guessing one', () => {
+    const rows = parseStockItemCollectionResponse(REAL_STOCKITEM_GST_PRICING_RESPONSE);
+    const apple = rows.find((r) => r.NAME === 'Apple');
+    expect(apple.standardPriceHistory).toEqual([]);
+    expect(apple.standardCostHistory).toEqual([]);
+    // Apple does have one real GST entry, though (checked separately below).
+    expect(apple.gstRateHistory).toHaveLength(1);
+  });
+  it('parses a single GSTDETAILS.LIST entry into normalised CGST/SGST/IGST rates', () => {
+    const rows = parseStockItemCollectionResponse(REAL_STOCKITEM_GST_PRICING_RESPONSE);
+    const orange = rows.find((r) => r.NAME === 'Orange');
+    expect(orange.gstRateHistory).toEqual([
+      {
+        applicableFrom: '2025-04-01',
+        states: [{ state: 'Any', cgst: 9, sgst: 9, igst: 18 }],
+      },
+    ]);
+  });
+  it('parses real STANDARDPRICELIST/STANDARDCOSTLIST entries, including the "value/unit" rate format', () => {
+    const rows = parseStockItemCollectionResponse(REAL_STOCKITEM_GST_PRICING_RESPONSE);
+    const orange = rows.find((r) => r.NAME === 'Orange');
+    expect(orange.standardCostHistory).toEqual([{ date: '2026-04-01', rate: 500, unit: 'KG' }]);
+    expect(orange.standardPriceHistory).toEqual([{ date: '2026-04-01', rate: 1000, unit: 'KG' }]);
+  });
+  it('parses multiple GSTDETAILS.LIST entries as a real effective-dated history, never picking just one', () => {
+    const rows = parseStockItemCollectionResponse(REAL_STOCKITEM_GST_PRICING_RESPONSE);
+    const shampoo = rows.find((r) => r.NAME === 'Anti-Dandruff Shampoos');
+    expect(shampoo.gstRateHistory).toEqual([
+      { applicableFrom: '2025-04-01', states: [{ state: 'Any', cgst: null, sgst: null, igst: null }] },
+      { applicableFrom: '2025-08-01', states: [{ state: 'Any', cgst: 2.5, sgst: 2.5, igst: 5 }] },
+    ]);
+  });
+  it('flattens GSTHSNCODE like any other plain field — it needs no special .LIST handling', () => {
+    const xml = `<ENVELOPE><HEADER><STATUS>1</STATUS></HEADER><BODY><DATA><COLLECTION>
+      <STOCKITEM NAME="Solo"><GSTHSNCODE TYPE="String">123456</GSTHSNCODE></STOCKITEM>
+    </COLLECTION></DATA></BODY></ENVELOPE>`;
+    const rows = parseStockItemCollectionResponse(xml);
+    expect(rows).toEqual([
+      { NAME: 'Solo', GSTHSNCODE: '123456', gstRateHistory: [], standardPriceHistory: [], standardCostHistory: [] },
+    ]);
+  });
+  it('never touches the general *.LIST-dropping behaviour of flattenRecord — other .LIST fields stay absent', () => {
+    const rows = parseStockItemCollectionResponse(REAL_STOCKITEM_GST_PRICING_RESPONSE);
+    for (const row of rows) {
+      const listKeys = Object.keys(row).filter(
+        (k) => k.includes('.') && !['gstRateHistory', 'standardPriceHistory', 'standardCostHistory'].includes(k),
+      );
+      expect(listKeys).toEqual([]);
+    }
   });
 });

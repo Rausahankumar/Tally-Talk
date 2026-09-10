@@ -25,11 +25,19 @@ GROUP BY godown_name
 HAVING SUM(quantity) >= ?
 ORDER BY godown_name ASC
 `;
+const SELECT_ALL_GODOWNS_WITH_RECORDED_STOCK_SQL = `
+SELECT godown_name, SUM(quantity) AS total_quantity
+FROM ${STOCK_AVAILABILITY_TABLE}
+WHERE stock_item_name = ?
+GROUP BY godown_name
+ORDER BY godown_name ASC
+`;
 export function createStockAvailabilityCache(deps) {
   const deleteItem = deps.db.prepare(DELETE_ITEM_SQL);
   const insert = deps.db.prepare(INSERT_SQL);
   const selectAvailability = deps.db.prepare(SELECT_AVAILABILITY_SQL);
   const selectAlternativeGodowns = deps.db.prepare(SELECT_ALTERNATIVE_GODOWNS_SQL);
+  const selectAllGodownsWithRecordedStock = deps.db.prepare(SELECT_ALL_GODOWNS_WITH_RECORDED_STOCK_SQL);
   return {
     getAvailability(stockItemName, godownName) {
       const rows = selectAvailability.all(stockItemName, godownName);
@@ -42,6 +50,25 @@ export function createStockAvailabilityCache(deps) {
     },
     getGodownsWithSufficientStock(stockItemName, requiredQuantity, excludeGodown) {
       const rows = selectAlternativeGodowns.all(stockItemName, excludeGodown, requiredQuantity);
+      return rows.map((row) => ({
+        godown: row.godown_name,
+        availableQuantity: row.total_quantity,
+      }));
+    },
+    /**
+     * Every godown (no exclusion) that has *any* recorded stock for this item
+     * — regardless of quantity, including zero or negative — used to
+     * auto-select a godown when the user did not state one and none is
+     * configured as the default (`postingReadiness.js`). Deliberately not
+     * filtered by requested quantity: whether the recorded amount is enough
+     * is a separate, non-blocking warning (see `postingReadiness.js`'s
+     * `stockWarnings`), never a reason to exclude a godown from being
+     * selectable here. Never guesses: the caller auto-selects only when
+     * exactly one row comes back; a stock item with no recorded row in any
+     * godown returns nothing, same as before.
+     */
+    getAllGodownsWithRecordedStock(stockItemName) {
+      const rows = selectAllGodownsWithRecordedStock.all(stockItemName);
       return rows.map((row) => ({
         godown: row.godown_name,
         availableQuantity: row.total_quantity,

@@ -1,0 +1,27 @@
+$kind: http-request
+name: 4. Allowed user, /start -> normal processing
+description: There is no dedicated /start handler anywhere in this codebase — it flows through as an ordinary text message into the LLM extractor. Expect 200 {"ok":true}. This calls the real Anthropic API; a real Telegram reply is sent back to this chat id (a 'nothing usable extracted' style follow-up, since '/start' isn't a transaction).
+url: "{{baseUrl}}/webhook/telegram"
+method: POST
+headers:
+  Content-Type: application/json
+  X-Telegram-Bot-Api-Secret-Token: "{{webhookSecret}}"
+body:
+  type: text
+  content: |-
+    {
+      "update_id": 100004,
+      "message": {
+        "message_id": 4,
+        "date": 1700000000,
+        "from": { "id": {{allowedUserId}}, "is_bot": false, "first_name": "Test", "username": "testuser" },
+        "chat": { "id": {{allowedUserId}}, "type": "private", "first_name": "Test" },
+        "text": "/start"
+      }
+    }
+scripts:
+  - type: afterResponse
+    code: |-
+      pm.test('status is 200', () => pm.response.to.have.status(200));
+      pm.test('body is ok:true', () => pm.expect(pm.response.json()).to.eql({ ok: true }));
+order: 4000

@@ -1,0 +1,27 @@
+$kind: http-request
+name: 5. Allowed user, normal text -> normal processing
+description: A realistic transaction message from an allowed user. Expect 200 {"ok":true}, plus a real Telegram reply carrying the extraction preview (or a follow-up question) sent to this chat id. This calls the real Anthropic API and reads Tally masters read-only — it does NOT post anything to Tally (that only happens on a Confirm button callback, which this collection deliberately never sends).
+url: "{{baseUrl}}/webhook/telegram"
+method: POST
+headers:
+  Content-Type: application/json
+  X-Telegram-Bot-Api-Secret-Token: "{{webhookSecret}}"
+body:
+  type: text
+  content: |-
+    {
+      "update_id": 100005,
+      "message": {
+        "message_id": 5,
+        "date": 1700000000,
+        "from": { "id": {{allowedUserId}}, "is_bot": false, "first_name": "Test", "username": "testuser" },
+        "chat": { "id": {{allowedUserId}}, "type": "private", "first_name": "Test" },
+        "text": "Sell 5 Apple from Main Location to Balaji Retail Store at 1000 each, 18% GST"
+      }
+    }
+scripts:
+  - type: afterResponse
+    code: |-
+      pm.test('status is 200', () => pm.response.to.have.status(200));
+      pm.test('body is ok:true', () => pm.expect(pm.response.json()).to.eql({ ok: true }));
+order: 5000

@@ -299,6 +299,20 @@ describe('parseImportResponse', () => {
     expect(result.message).toContain('Ledger does not exist');
     expect(result.tallyVoucherId).toBeNull();
   });
+  it('treats EXCEPTIONS > 0 with a LINEERROR as failed, even when ERRORS is 0', () => {
+    const result = parseImportResponse(
+      '<RESPONSE><LINEERROR>Voucher date is missing for: \'Sales\' voucher 1.</LINEERROR><CREATED>0</CREATED><ALTERED>0</ALTERED><ERRORS>0</ERRORS><EXCEPTIONS>1</EXCEPTIONS></RESPONSE>',
+    );
+    expect(result.outcome).toBe('failed');
+    expect(result.message).toContain('Voucher date is missing');
+    expect(result.tallyVoucherId).toBeNull();
+  });
+  it('does not treat EXCEPTIONS > 0 without a LINEERROR as failed', () => {
+    const result = parseImportResponse(
+      '<RESPONSE><CREATED>0</CREATED><ALTERED>0</ALTERED><ERRORS>0</ERRORS><EXCEPTIONS>1</EXCEPTIONS></RESPONSE>',
+    );
+    expect(result.outcome).toBe('uncertain');
+  });
   it('falls back to a generic message when errors are reported without a line error', () => {
     const result = parseImportResponse('<RESPONSE><ERRORS>2</ERRORS></RESPONSE>');
     expect(result.outcome).toBe('failed');

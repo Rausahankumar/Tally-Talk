@@ -6,6 +6,7 @@ const VALID_DRAFT = {
   items: [{ itemName: 'cement', quantity: 100, rate: 500, godown: null }],
   gstPercent: 18,
   placeOfSupply: null,
+  date: null,
   missingFields: [],
   ambiguityNote: null,
 };
@@ -29,6 +30,7 @@ describe('parseTransactionDraft — accepts a well-formed draft', () => {
       items: [],
       gstPercent: null,
       placeOfSupply: null,
+      date: null,
       missingFields: ['voucherType', 'partyName', 'items', 'gstPercent', 'placeOfSupply'],
       ambiguityNote: null,
     };
@@ -56,6 +58,10 @@ describe('parseTransactionDraft — accepts a well-formed draft', () => {
   it('accepts an explicitly stated place of supply', () => {
     const draft = { ...VALID_DRAFT, placeOfSupply: 'Uttar Pradesh' };
     expect(parseTransactionDraft(draft).placeOfSupply).toBe('Uttar Pradesh');
+  });
+  it('accepts an explicitly stated date in ISO 8601 form', () => {
+    const draft = { ...VALID_DRAFT, date: '2026-09-01' };
+    expect(parseTransactionDraft(draft).date).toBe('2026-09-01');
   });
   it('accepts an explicit godown on a line item', () => {
     const draft = {
@@ -154,6 +160,12 @@ describe('parseTransactionDraft — rejects malformed drafts', () => {
     expect(problemsFrom({ ...VALID_DRAFT, placeOfSupply: '' }).join('\n')).toContain(
       'placeOfSupply',
     );
+  });
+  it('rejects a non-ISO date string', () => {
+    expect(problemsFrom({ ...VALID_DRAFT, date: '01-09-2026' }).join('\n')).toContain('date');
+  });
+  it('rejects a non-string, non-null date', () => {
+    expect(problemsFrom({ ...VALID_DRAFT, date: 20260901 }).join('\n')).toContain('date');
   });
   it('rejects a missingFields value outside the fixed vocabulary', () => {
     expect(problemsFrom({ ...VALID_DRAFT, missingFields: ['totalAmount'] }).join('\n')).toContain(

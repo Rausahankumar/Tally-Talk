@@ -8,6 +8,13 @@
  * that this project's existing master cache (`tally_masters`) has no field
  * for (see DECISIONS.md #19 and #26).
  *
+ * `salesRate`/`purchaseRate`/`gstPercent` are the same kind of trusted local
+ * configuration, added so a transaction that doesn't state a rate or a GST
+ * rate can be resolved from something the deployment operator configured —
+ * never invented, and never read from Tally itself (see DECISIONS.md #26).
+ * All three are optional: a mapping with none of them set still works exactly
+ * as before, resolving only the ledger names.
+ *
  * Lookup is by exact stock item name only. There is no fuzzy matching here:
  * fuzzy-matching a *ledger selection* would mean guessing which of two
  * similarly-configured items' tax treatment to apply, which is exactly the
@@ -16,14 +23,19 @@
 import { ITEM_LEDGER_MAPPINGS_TABLE } from '../db/schema.js';
 export function createItemLedgerMappingStore(db) {
   const select = db.prepare(
-    `SELECT stock_item_name, sales_ledger, purchase_ledger FROM ${ITEM_LEDGER_MAPPINGS_TABLE} WHERE stock_item_name = ?`,
+    `SELECT stock_item_name, sales_ledger, purchase_ledger, sales_rate, purchase_rate, gst_percent
+     FROM ${ITEM_LEDGER_MAPPINGS_TABLE} WHERE stock_item_name = ?`,
   );
   const upsert = db.prepare(`
-    INSERT INTO ${ITEM_LEDGER_MAPPINGS_TABLE} (stock_item_name, sales_ledger, purchase_ledger, updated_at)
-    VALUES (@stockItemName, @salesLedger, @purchaseLedger, @updatedAt)
+    INSERT INTO ${ITEM_LEDGER_MAPPINGS_TABLE}
+      (stock_item_name, sales_ledger, purchase_ledger, sales_rate, purchase_rate, gst_percent, updated_at)
+    VALUES (@stockItemName, @salesLedger, @purchaseLedger, @salesRate, @purchaseRate, @gstPercent, @updatedAt)
     ON CONFLICT(stock_item_name) DO UPDATE SET
       sales_ledger = excluded.sales_ledger,
       purchase_ledger = excluded.purchase_ledger,
+      sales_rate = excluded.sales_rate,
+      purchase_rate = excluded.purchase_rate,
+      gst_percent = excluded.gst_percent,
       updated_at = excluded.updated_at
   `);
   return {
@@ -34,6 +46,9 @@ export function createItemLedgerMappingStore(db) {
         stockItemName: row.stock_item_name,
         salesLedger: row.sales_ledger,
         purchaseLedger: row.purchase_ledger,
+        salesRate: row.sales_rate ?? null,
+        purchaseRate: row.purchase_rate ?? null,
+        gstPercent: row.gst_percent ?? null,
       };
     },
     setMapping(mapping) {
@@ -41,6 +56,9 @@ export function createItemLedgerMappingStore(db) {
         stockItemName: mapping.stockItemName,
         salesLedger: mapping.salesLedger,
         purchaseLedger: mapping.purchaseLedger,
+        salesRate: mapping.salesRate ?? null,
+        purchaseRate: mapping.purchaseRate ?? null,
+        gstPercent: mapping.gstPercent ?? null,
         updatedAt: new Date().toISOString(),
       });
     },

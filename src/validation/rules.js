@@ -26,3 +26,20 @@ export function isValidGstPercent(gstPercent) {
   if (!Number.isFinite(gstPercent)) return false;
   return VALID_GST_RATES.some((rate) => Math.abs(rate - gstPercent) < GST_RATE_EPSILON);
 }
+/**
+ * Parses a strict "YYYY-MM-DD" string into a real calendar Date, at local
+ * midnight. Rejects anything that doesn't round-trip (e.g. "2026-02-30",
+ * which `Date` would otherwise silently roll over into March) — the LLM's
+ * output is never trusted just because it matched the expected shape.
+ */
+export function parseIsoDate(value) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (match === null) return null;
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  const date = new Date(year, month - 1, day);
+  const roundTrips =
+    date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day;
+  return roundTrips ? date : null;
+}

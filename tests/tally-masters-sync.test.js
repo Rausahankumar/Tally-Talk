@@ -57,4 +57,22 @@ describe('syncMasterData', () => {
       expect(call?.[1]).toEqual(definition.fields);
     }
   });
+  it('passes StockItem\'s specialised parser through to exportCollection, and no other type\'s', async () => {
+    const requestedOptions = [];
+    const client = {
+      async exportCollection(masterType, _fields, exportOptions) {
+        requestedOptions.push([masterType, exportOptions]);
+        return [];
+      },
+    };
+    await syncMasterData(client, fakeCache());
+    const stockItemDefinition = MASTER_DEFINITIONS.find((d) => d.type === 'StockItem');
+    for (const [type, exportOptions] of requestedOptions) {
+      if (type === 'StockItem') {
+        expect(exportOptions).toEqual({ parse: stockItemDefinition.parse });
+      } else {
+        expect(exportOptions).toBeUndefined();
+      }
+    }
+  });
 });

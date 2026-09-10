@@ -58,22 +58,19 @@ const config = {
     allowedUserIds: new Set([AUTHORIZED_USER_ID]),
   },
   databasePath: ':memory:',
-  tally: { host: '127.0.0.1', port: 9000, companyName: 'Test Company' },
+  tally: { host: '127.0.0.1', port: 9000 },
   llm: {
     provider: 'anthropic',
     apiKey: 'test-api-key',
     model: 'claude-sonnet-5',
     workspaceId: null,
   },
-  gst: {
-    companyState: 'Delhi',
-    cgstLedger: 'CGST',
-    sgstLedger: 'SGST',
-    igstLedger: 'IGST',
-    defaultPlaceOfSupply: null,
-  },
-  godown: { defaultGodown: null },
+  gst: { defaultPlaceOfSupply: null },
 };
+// companyName/companyState are discovered from Tally at startup in the real
+// app (tally/company.js) — passed directly here, the same way server.js does.
+const COMPANY_NAME = 'Test Company';
+const COMPANY_STATE = 'Delhi';
 function messageUpdate(userId, text) {
   return {
     update_id: 1,
@@ -97,6 +94,8 @@ beforeEach(() => {
   conversationStore = createConversationStore(database.db);
   app = createApp({
     config,
+    companyName: COMPANY_NAME,
+    companyState: COMPANY_STATE,
     telegram,
     llm: createFakeLLMClient(),
     db: database.db,
@@ -178,6 +177,17 @@ describe('user allowlist', () => {
     expect(response.status).toBe(200);
     // The exact reply is the conversation layer's concern (see the dedicated
     // Phase 6 flow tests) — this only proves the gates let the message through.
+    expect(telegram.sent).toHaveLength(1);
+    expect(telegram.sent[0]?.chatId).toBe(CHAT_ID);
+  });
+  it('treats /start as an ordinary text message — there is no dedicated command handler', async () => {
+    const response = await request(app)
+      .post(TELEGRAM_WEBHOOK_PATH)
+      .set(SECRET_TOKEN_HEADER, WEBHOOK_SECRET)
+      .send(messageUpdate(AUTHORIZED_USER_ID, '/start'));
+    expect(response.status).toBe(200);
+    // Same gates, same conversation layer, same reply path as any other text —
+    // /start carries no special meaning anywhere in this codebase.
     expect(telegram.sent).toHaveLength(1);
     expect(telegram.sent[0]?.chatId).toBe(CHAT_ID);
   });

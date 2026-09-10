@@ -1,0 +1,145 @@
+{
+  "info": {
+    "name": "TallyTalk - Telegram Webhook",
+    "description": "Manual test coverage for POST /webhook/telegram: the two security gates (secret token, user allowlist) and normal message processing. Mirrors tests/telegram-webhook.test.js. Requires the backend running locally (npm run dev / npm start) and the 'TallyTalk Local' environment selected.\n\nNote: the two \"allowed user\" requests call the real LLM (Anthropic) and, on success, produce a real conversation draft/Telegram reply — that's expected, not a bug. Nothing in this collection sends a Confirm callback, so Tally is never written to.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "unauthorizedUserId", "value": "999999999" },
+    { "key": "chatId", "value": "555" }
+  ],
+  "item": [
+    {
+      "name": "Missing Secret",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"update_id\": 100001,\n  \"message\": {\n    \"message_id\": 1,\n    \"date\": 1700000000,\n    \"from\": { \"id\": {{allowedTelegramUserId}}, \"is_bot\": false, \"first_name\": \"Test\", \"username\": \"testuser\" },\n    \"chat\": { \"id\": {{chatId}}, \"type\": \"private\", \"first_name\": \"Test\" },\n    \"text\": \"hello\"\n  }\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/webhook/telegram", "host": ["{{baseUrl}}"], "path": ["webhook", "telegram"] },
+        "description": "No X-Telegram-Bot-Api-Secret-Token header at all. Expect 401 {\"error\":\"unauthorized\"}. No reply is sent, nothing is queued."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('status is 401', () => pm.response.to.have.status(401));",
+              "pm.test('body is unauthorized', () => pm.expect(pm.response.json()).to.eql({ error: 'unauthorized' }));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Wrong Secret",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "X-Telegram-Bot-Api-Secret-Token", "value": "definitely-the-wrong-secret" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"update_id\": 100002,\n  \"message\": {\n    \"message_id\": 2,\n    \"date\": 1700000000,\n    \"from\": { \"id\": {{allowedTelegramUserId}}, \"is_bot\": false, \"first_name\": \"Test\", \"username\": \"testuser\" },\n    \"chat\": { \"id\": {{chatId}}, \"type\": \"private\", \"first_name\": \"Test\" },\n    \"text\": \"hello\"\n  }\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/webhook/telegram", "host": ["{{baseUrl}}"], "path": ["webhook", "telegram"] },
+        "description": "Header present but wrong. Expect 401 {\"error\":\"unauthorized\"} — identical response to the missing-secret case, deliberately, so a prober learns nothing."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('status is 401', () => pm.response.to.have.status(401));",
+              "pm.test('body is unauthorized', () => pm.expect(pm.response.json()).to.eql({ error: 'unauthorized' }));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Unauthorized User",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "X-Telegram-Bot-Api-Secret-Token", "value": "{{telegramWebhookSecret}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"update_id\": 100003,\n  \"message\": {\n    \"message_id\": 3,\n    \"date\": 1700000000,\n    \"from\": { \"id\": {{unauthorizedUserId}}, \"is_bot\": false, \"first_name\": \"Stranger\" },\n    \"chat\": { \"id\": {{unauthorizedUserId}}, \"type\": \"private\", \"first_name\": \"Stranger\" },\n    \"text\": \"sell 100 bags to Ramesh\"\n  }\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/webhook/telegram", "host": ["{{baseUrl}}"], "path": ["webhook", "telegram"] },
+        "description": "Correct secret, but from.id is NOT in TELEGRAM_ALLOWED_USER_IDS. Expect 200 {\"ok\":true} (Telegram must not be told to retry), but no Telegram reply is sent and no LLM call happens. Check the backend log for 'Rejected update from user not on allowlist'."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('status is 200 (acknowledged, not rejected)', () => pm.response.to.have.status(200));",
+              "pm.test('body is ok:true', () => pm.expect(pm.response.json()).to.eql({ ok: true }));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Allowed User /start",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "X-Telegram-Bot-Api-Secret-Token", "value": "{{telegramWebhookSecret}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"update_id\": 100004,\n  \"message\": {\n    \"message_id\": 4,\n    \"date\": 1700000000,\n    \"from\": { \"id\": {{allowedTelegramUserId}}, \"is_bot\": false, \"first_name\": \"Test\", \"username\": \"testuser\" },\n    \"chat\": { \"id\": {{allowedTelegramUserId}}, \"type\": \"private\", \"first_name\": \"Test\" },\n    \"text\": \"/start\"\n  }\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/webhook/telegram", "host": ["{{baseUrl}}"], "path": ["webhook", "telegram"] },
+        "description": "There is no dedicated /start handler anywhere in this codebase — it flows through as an ordinary text message into the LLM extractor. Expect 200 {\"ok\":true}. This calls the real Anthropic API; a real Telegram reply is sent back to this chat id."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('status is 200', () => pm.response.to.have.status(200));",
+              "pm.test('body is ok:true', () => pm.expect(pm.response.json()).to.eql({ ok: true }));"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Allowed User / transaction text",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "X-Telegram-Bot-Api-Secret-Token", "value": "{{telegramWebhookSecret}}" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"update_id\": 100005,\n  \"message\": {\n    \"message_id\": 5,\n    \"date\": 1700000000,\n    \"from\": { \"id\": {{allowedTelegramUserId}}, \"is_bot\": false, \"first_name\": \"Test\", \"username\": \"testuser\" },\n    \"chat\": { \"id\": {{allowedTelegramUserId}}, \"type\": \"private\", \"first_name\": \"Test\" },\n    \"text\": \"Sell 5 Apple from Main Location to Balaji Retail Store at 1000 each, 18% GST\"\n  }\n}"
+        },
+        "url": { "raw": "{{baseUrl}}/webhook/telegram", "host": ["{{baseUrl}}"], "path": ["webhook", "telegram"] },
+        "description": "A realistic transaction message from an allowed user. Expect 200 {\"ok\":true}, plus a real Telegram reply carrying the extraction preview (or a follow-up question) sent to this chat id. This calls the real Anthropic API and reads Tally masters read-only — it does NOT post anything to Tally (that only happens on a Confirm button callback, which this collection deliberately never sends)."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "exec": [
+              "pm.test('status is 200', () => pm.response.to.have.status(200));",
+              "pm.test('body is ok:true', () => pm.expect(pm.response.json()).to.eql({ ok: true }));"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -16,11 +16,21 @@ import { XMLParser } from 'fast-xml-parser';
  * children — confirmed live as the only way to enumerate `Batch` records
  * (`TYPE=Batch` with no `CHILDOF` returns zero rows even when batches exist;
  * scoped to a specific stock item name, it returns them).
+ *
+ * `companyName` is optional — confirmed live that omitting `SVCURRENTCOMPANY`
+ * entirely (not an empty value, the tag left out) still returns data scoped
+ * to whichever single company is open in Tally. This is what makes company
+ * discovery itself possible without already knowing the company's name (see
+ * `tally/company.js`); every other query still passes a real discovered name.
  */
 export function buildCollectionRequest(options) {
   const { collectionName, masterType, companyName, fields, childOf } = options;
   const childOfXml =
     childOf !== undefined ? `\n      <CHILDOF>${escapeXml(childOf)}</CHILDOF>` : '';
+  const companyXml =
+    companyName !== undefined
+      ? `\n    <SVCURRENTCOMPANY>${escapeXml(companyName)}</SVCURRENTCOMPANY>`
+      : '';
   return `<ENVELOPE>
  <HEADER>
   <VERSION>1</VERSION>
@@ -31,8 +41,7 @@ export function buildCollectionRequest(options) {
  <BODY>
   <DESC>
    <STATICVARIABLES>
-    <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>
-    <SVCURRENTCOMPANY>${escapeXml(companyName)}</SVCURRENTCOMPANY>
+    <SVEXPORTFORMAT>$$SysName:XML</SVEXPORTFORMAT>${companyXml}
    </STATICVARIABLES>
    <TDL>
     <TDLMESSAGE>
@@ -76,7 +85,15 @@ const parser = new XMLParser({
  * one matching master is a single object, not a one-element array. Both shapes
  * are normalised to an array here.
  */
-export function parseCollectionResponse(xml, masterTag) {
+/**
+ * Shared envelope-unwrapping: validates the response shape and returns the
+ * raw (un-flattened) rows for one master tag, or throws/returns `[]` exactly
+ * as documented on `parseCollectionResponse`. Both that function and
+ * `parseStockItemCollectionResponse` build on this so the envelope-handling
+ * rules (rejected request, non-success status, empty/whitespace collection)
+ * are defined once, not duplicated.
+ */
+function parseEnvelopeRows(xml, masterTag) {
   let doc;
   try {
     doc = parser.parse(xml);
@@ -113,8 +130,10 @@ export function parseCollectionResponse(xml, masterTag) {
   }
   const rows = collection[masterTag];
   if (rows === undefined) return [];
-  const list = Array.isArray(rows) ? rows : [rows];
-  return list.map((row) => flattenRecord(row));
+  return Array.isArray(rows) ? rows : [rows];
+}
+export function parseCollectionResponse(xml, masterTag) {
+  return parseEnvelopeRows(xml, masterTag).map((row) => flattenRecord(row));
 }
 function getPath(value, path) {
   let current = value;
@@ -153,4 +172,102 @@ function flattenRecord(row) {
     out[key] = String(value);
   }
   return out;
+}
+/**
+ * Text content of one Tally leaf node — handles both the
+ * `{"@_TYPE":"...", "#text":"..."}` shape and a plain string leaf
+ * (`<RATE>500.00/KG</RATE>` has no TYPE attribute). A self-closed or
+ * genuinely absent node returns `null`, never a guessed default.
+ */
+function textOf(node) {
+  if (node === undefined || node === null) return null;
+  if (typeof node === 'string') return node.trim() === '' ? null : node.trim();
+  if (typeof node === 'object') {
+    const text = node['#text'];
+    return text !== undefined ? String(text).trim() : null;
+  }
+  return String(node);
+}
+/** Tally's fixed `YYYYMMDD` date shape only — `"20250401"` -> `"2025-04-01"`. Anything else returns `null`, never guessed. */
+function tallyDateToIso(value) {
+  const match = /^(\d{4})(\d{2})(\d{2})$/.exec(value ?? '');
+  if (match === null) return null;
+  return `${match[1]}-${match[2]}-${match[3]}`;
+}
+/** `"500.00/KG"` -> `{ rate: 500, unit: "KG" }`. Anything not matching this exact shape returns `null`. */
+function parseSlashRate(value) {
+  const match = /^\s*([\d.]+)\s*\/\s*(\S+)\s*$/.exec(value ?? '');
+  if (match === null) return null;
+  const rate = Number(match[1]);
+  return Number.isFinite(rate) ? { rate, unit: match[2] } : null;
+}
+/** Normalises "one row or many" the same way `parseEnvelopeRows` does for the outer collection — Tally omits the array wrapper for a single child too. */
+function asList(value) {
+  if (value === undefined) return [];
+  return Array.isArray(value) ? value : [value];
+}
+/** Only the three duty heads this project actually resolves elsewhere (`gstLedgerResolution.js`) — Cess/State Cess are real fields but not tracked here. */
+const GST_DUTY_HEAD_KEY = { cgst: 'cgst', 'sgst/utgst': 'sgst', igst: 'igst' };
+/** One `STATEWISEDETAILS.LIST` entry -> `{ state, cgst, sgst, igst }`. A duty head with no `GSTRATE` (confirmed live: Tally omits the tag rather than sending 0) stays `null`. */
+function parseStateWiseDetails(raw) {
+  const state = textOf(raw?.STATENAME) ?? 'Any';
+  const rates = { cgst: null, sgst: null, igst: null };
+  for (const entry of asList(raw?.['RATEDETAILS.LIST'])) {
+    const dutyHead = textOf(entry?.GSTRATEDUTYHEAD)?.toLowerCase();
+    const key = dutyHead !== undefined ? GST_DUTY_HEAD_KEY[dutyHead] : undefined;
+    if (key === undefined) continue;
+    const rateText = textOf(entry?.GSTRATE);
+    const rate = rateText === null ? null : Number(rateText);
+    rates[key] = rate !== null && Number.isFinite(rate) ? rate : null;
+  }
+  return { state, ...rates };
+}
+/** One `GSTDETAILS.LIST` entry -> `{ applicableFrom, states }`, or `null` when its date can't be parsed — dropped, never defaulted. */
+function parseGstDetailsEntry(raw) {
+  const applicableFrom = tallyDateToIso(textOf(raw?.APPLICABLEFROM));
+  if (applicableFrom === null) return null;
+  return { applicableFrom, states: asList(raw?.['STATEWISEDETAILS.LIST']).map(parseStateWiseDetails) };
+}
+/** One `STANDARDPRICELIST.LIST`/`STANDARDCOSTLIST.LIST` entry -> `{ date, rate, unit }`, or `null` if unparseable/absent. */
+function parseRateHistoryEntry(raw) {
+  const date = tallyDateToIso(textOf(raw?.DATE));
+  const parsedRate = parseSlashRate(textOf(raw?.RATE));
+  return date !== null && parsedRate !== null ? { date, rate: parsedRate.rate, unit: parsedRate.unit } : null;
+}
+/**
+ * Parses ONLY the three specific StockItem `.LIST` structures confirmed live
+ * against this project's own TallyPrime instance (`GSTDETAILS.LIST`,
+ * `STANDARDPRICELIST.LIST`, `STANDARDCOSTLIST.LIST`) into a small, explicit,
+ * normalised shape. This is deliberately not a generic `.LIST` parser —
+ * `flattenRecord` (used for every field on every other master type, and for
+ * every other field on StockItem too) is completely untouched; adding
+ * support for a different `.LIST` field later means extending this function
+ * by name, never enabling `.LIST` parsing in general.
+ */
+function parseStockItemGstAndPricing(row) {
+  if (typeof row !== 'object' || row === null) {
+    return { gstRateHistory: [], standardPriceHistory: [], standardCostHistory: [] };
+  }
+  return {
+    gstRateHistory: asList(row['GSTDETAILS.LIST']).map(parseGstDetailsEntry).filter((e) => e !== null),
+    standardPriceHistory: asList(row['STANDARDPRICELIST.LIST'])
+      .map(parseRateHistoryEntry)
+      .filter((e) => e !== null),
+    standardCostHistory: asList(row['STANDARDCOSTLIST.LIST'])
+      .map(parseRateHistoryEntry)
+      .filter((e) => e !== null),
+  };
+}
+/**
+ * Same envelope handling as `parseCollectionResponse`, for `TYPE=StockItem`
+ * only: every plain field is flattened exactly as before (same
+ * `flattenRecord`), with `gstRateHistory`/`standardPriceHistory`/
+ * `standardCostHistory` added from the three `.LIST` structures above. No
+ * other master type gets this treatment.
+ */
+export function parseStockItemCollectionResponse(xml) {
+  return parseEnvelopeRows(xml, 'STOCKITEM').map((row) => ({
+    ...flattenRecord(row),
+    ...parseStockItemGstAndPricing(row),
+  }));
 }

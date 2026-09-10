@@ -75,6 +75,30 @@ function combinedSimilarity(a, b) {
   return Math.max(wholeString, partial);
 }
 /**
+ * How close a `fuzzy` result must be to auto-accept without confirmation, as
+ * opposed to being treated like a single-candidate ambiguity. Deliberately
+ * higher than `FUZZY_THRESHOLD` (which only asks "is this plausible at all")
+ * — a match barely clearing that floor is exactly the kind of coincidental,
+ * low-confidence collision (e.g. two unrelated short names sharing most of
+ * their letters) that must not be silently accepted just because a party or
+ * item name happened to be involved.
+ *
+ * Calibrated against real, verified cases, not guessed: a genuine typo
+ * ("Balaji Retial Store" -> "Balaji Retail Store") scores ~0.8947 and must
+ * keep auto-accepting; a coincidental collision ("New customer" -> a
+ * same-length substring of an unrelated ledger name) scored exactly 0.75 —
+ * this threshold sits strictly between the two.
+ */
+const AUTO_ACCEPT_THRESHOLD = 0.85;
+/** The raw similarity score behind a match — exposed so callers can apply a stricter confidence bar on top of `matchName`'s own `fuzzy`/`ambiguous` split, without duplicating its scoring logic. */
+export function matchScore(query, name) {
+  return combinedSimilarity(normalize(query), normalize(name));
+}
+/** Whether a specific candidate name is a high-confidence match for `query` — i.e. safe to auto-accept without asking. */
+export function isHighConfidenceMatch(query, name) {
+  return matchScore(query, name) >= AUTO_ACCEPT_THRESHOLD;
+}
+/**
  * Match `query` against `candidateNames`. Requirement order is exact, then
  * deterministic fuzzy, then ambiguous, then not-found — never a guess between
  * close alternatives.

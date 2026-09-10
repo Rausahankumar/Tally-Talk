@@ -1,0 +1,11 @@
+$kind: collection
+description: |-
+  Manual test coverage for POST /webhook/telegram: the two security gates (secret token, user allowlist) and normal message processing. Mirrors tests/telegram-webhook.test.js. Requires the backend running locally (npm run dev / npm start) and a matching environment selected (see postman/environments/).
+
+  Note: the two "allowed user" requests call the real LLM (Anthropic) and, on success, produce a real conversation draft — this is expected, not a bug.
+variables:
+  baseUrl: http://localhost:3000
+  webhookSecret: REPLACE_WITH_TELEGRAM_WEBHOOK_SECRET
+  allowedUserId: REPLACE_WITH_TELEGRAM_ALLOWED_USER_IDS
+  unauthorizedUserId: "999999999"
+  chatId: "555"

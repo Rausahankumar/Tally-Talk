@@ -35,24 +35,14 @@ const config = {
     allowedUserIds: new Set([USER_A, USER_B]),
   },
   gst: {
-    companyState: 'Delhi',
-    cgstLedger: 'CGST',
-    sgstLedger: 'SGST',
-    igstLedger: 'IGST',
     // A default is configured for the shared fixture so tests unrelated to
     // GST (extraction, merge, ambiguity, confirm/cancel) keep reaching
     // preview exactly as before. The dedicated "Phase 8" tests below build
     // their own app with no default to test the "must ask" behaviour.
     defaultPlaceOfSupply: 'Delhi',
   },
-  godown: {
-    // A default is configured for the shared fixture, same reasoning as
-    // defaultPlaceOfSupply above — most tests here are not exercising
-    // godown-specific behaviour and should reach preview as before.
-    defaultGodown: 'Main Location',
-  },
   databasePath: ':memory:',
-  tally: { host: '127.0.0.1', port: 9000, companyName: 'Test Company' },
+  tally: { host: '127.0.0.1', port: 9000 },
   llm: {
     provider: 'anthropic',
     apiKey: 'test-api-key',
@@ -169,12 +159,17 @@ beforeEach(() => {
   conversationStore = createConversationStore(database.db);
   const masterCache = createTallyMasterCache({ db: database.db });
   masterCache.replaceAll('Ledger', [
-    { NAME: 'Ramesh Kumar Enterprises', PARENT: 'Sundry Debtors' },
-    { NAME: 'Ramesh Traders', PARENT: 'Sundry Debtors' },
+    // Sales parties are Sundry Creditors under this deployment's corrected
+    // voucher-type/group mapping (see masterLookup.js) — both fixtures below
+    // are used in sales-voucher scenarios.
+    { NAME: 'Ramesh Kumar Enterprises', PARENT: 'Sundry Creditors' },
+    { NAME: 'Ramesh Traders', PARENT: 'Sundry Creditors' },
     { NAME: 'Suresh & Sons', PARENT: 'Sundry Creditors' },
-    { NAME: 'CGST', PARENT: 'Duties & Taxes' },
-    { NAME: 'SGST', PARENT: 'Duties & Taxes' },
-    { NAME: 'IGST', PARENT: 'Duties & Taxes' },
+    // TAXTYPE/GSTDUTYHEAD confirmed live on real CGST/SGST ledgers (see
+    // gstLedgerResolution.js) — required for dynamic GST ledger resolution.
+    { NAME: 'CGST', PARENT: 'Duties & Taxes', TAXTYPE: 'GST', GSTDUTYHEAD: 'CGST' },
+    { NAME: 'SGST', PARENT: 'Duties & Taxes', TAXTYPE: 'GST', GSTDUTYHEAD: 'SGST/UTGST' },
+    { NAME: 'IGST', PARENT: 'Duties & Taxes', TAXTYPE: 'GST', GSTDUTYHEAD: 'IGST' },
     { NAME: 'Sales', PARENT: 'Sales Accounts' },
     { NAME: 'Purchase', PARENT: 'Purchase Accounts' },
   ]);
@@ -206,6 +201,10 @@ beforeEach(() => {
   postingClient = createControllableTallyPostingClient();
   app = createApp({
     config,
+    // Discovered from Tally at real startup (tally/company.js) — passed
+    // directly here, matching what server.js does.
+    companyName: 'Test Company',
+    companyState: 'Delhi',
     telegram,
     llm,
     db: database.db,
@@ -599,6 +598,8 @@ describe('Phase 8 — GST and ledger configuration in the conversation flow', ()
   function appWithNoDefaultPlaceOfSupply() {
     return createApp({
       config: { ...config, gst: { ...config.gst, defaultPlaceOfSupply: null } },
+      companyName: 'Test Company',
+      companyState: 'Delhi',
       telegram,
       llm,
       db: database.db,
@@ -677,6 +678,18 @@ describe('Phase 8 — GST and ledger configuration in the conversation flow', ()
   it('reports a configuration error, not a question, when a Sales/Purchase mapping is missing', async () => {
     // "Cement Bags" was deliberately not given a mapping in this test.
     database.db.exec("DELETE FROM item_ledger_mappings WHERE stock_item_name = 'Cement Bags'");
+    // Without a manual mapping, readiness now tries to auto-resolve a single
+    // unambiguous Sales Accounts ledger (postingReadiness.js
+    // resolveDefaultRevenueLedger) — adding a second one here keeps this
+    // test's real intent (no mapping, no safe automatic answer either) genuine.
+    createTallyMasterCache({ db: database.db }).replaceAll('Ledger', [
+      { NAME: 'Suresh & Sons', PARENT: 'Sundry Creditors' },
+      { NAME: 'CGST', PARENT: 'Duties & Taxes', TAXTYPE: 'GST', GSTDUTYHEAD: 'CGST' },
+      { NAME: 'SGST', PARENT: 'Duties & Taxes', TAXTYPE: 'GST', GSTDUTYHEAD: 'SGST/UTGST' },
+      { NAME: 'Sales', PARENT: 'Sales Accounts' },
+      { NAME: 'Purchase', PARENT: 'Purchase Accounts' },
+      { NAME: 'Another Sales Ledger', PARENT: 'Sales Accounts' },
+    ]);
     llm.setNextResponse(
       draft({
         partyName: 'Suresh & Sons',

@@ -27,11 +27,18 @@ export function createApp(deps) {
       llm: deps.llm,
       db: deps.db,
       conversationStore: deps.conversationStore,
-      gstConfig: deps.config.gst,
+      // companyState comes from the Tally company discovered at startup
+      // (tally/company.js), never from client-specific config.
+      gstConfig: { companyState: deps.companyState, defaultPlaceOfSupply: deps.config.gst.defaultPlaceOfSupply },
       itemLedgerMappingStore: deps.itemLedgerMappingStore,
-      godownConfig: deps.config.godown,
+      companyRevenueLedgerDefaultsStore: deps.companyRevenueLedgerDefaultsStore,
+      // No configured default godown — the existing stock-availability-based
+      // auto-select/ask/fail-closed resolution (postingReadiness.js) handles
+      // every case; this fallback layer stays available to callers that want
+      // it, but this deployment never sources one from .env.
+      godownConfig: { defaultGodown: null },
       stockAvailabilityStore: deps.stockAvailabilityStore,
-      companyName: deps.config.tally.companyName,
+      companyName: deps.companyName,
       postingStore: deps.postingStore,
       postingClient: deps.postingClient,
       auditLog: deps.auditLog,

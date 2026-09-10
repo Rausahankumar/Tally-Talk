@@ -18,6 +18,8 @@ export const MISSING_FIELD_NAMES = [
   'placeOfSupply',
 ];
 export const VOUCHER_TYPES = ['sales', 'purchase', 'unknown'];
+/** The only date shape accepted from the LLM — deterministic to parse, no locale guessing downstream. */
+const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 /**
  * The tool `input_schema` given to Anthropic. `additionalProperties: false` and
  * explicit enums are what make this a *constraint* on generation, not just a
@@ -44,6 +46,7 @@ export const TRANSACTION_DRAFT_TOOL_SCHEMA = {
     },
     gstPercent: { type: ['number', 'null'] },
     placeOfSupply: { type: ['string', 'null'] },
+    date: { type: ['string', 'null'] },
     missingFields: {
       type: 'array',
       items: { type: 'string', enum: [...MISSING_FIELD_NAMES] },
@@ -56,6 +59,7 @@ export const TRANSACTION_DRAFT_TOOL_SCHEMA = {
     'items',
     'gstPercent',
     'placeOfSupply',
+    'date',
     'missingFields',
     'ambiguityNote',
   ],
@@ -120,6 +124,7 @@ export function parseTransactionDraft(candidate) {
     items,
     gstPercent,
     placeOfSupply,
+    date,
     missingFields,
     ambiguityNote,
     ...rest
@@ -149,6 +154,9 @@ export function parseTransactionDraft(candidate) {
   ) {
     problems.push('placeOfSupply must be a non-empty string or null');
   }
+  if (date !== null && (typeof date !== 'string' || !ISO_DATE_PATTERN.test(date))) {
+    problems.push('date must be an ISO 8601 date (YYYY-MM-DD) or null');
+  }
   let parsedMissingFields = [];
   if (!Array.isArray(missingFields)) {
     problems.push('missingFields must be an array');
@@ -171,6 +179,7 @@ export function parseTransactionDraft(candidate) {
     items: parsedItems,
     gstPercent: gstPercent,
     placeOfSupply: placeOfSupply,
+    date: date,
     missingFields: parsedMissingFields,
     ambiguityNote: ambiguityNote,
   };

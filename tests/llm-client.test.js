@@ -7,6 +7,7 @@ const VALID_DRAFT_INPUT = {
   items: [{ itemName: 'cement', quantity: 100, rate: 500, godown: null }],
   gstPercent: 18,
   placeOfSupply: null,
+  date: null,
   missingFields: [],
   ambiguityNote: null,
 };

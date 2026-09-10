@@ -8,6 +8,7 @@
 import { ConfigError, loadConfig } from '../config/index.js';
 import { consoleLogger } from '../logger.js';
 import { openDatabase } from '../db/sqlite.js';
+import { discoverCompany } from './company.js';
 import { createTallyClient } from './client.js';
 import { createTallyMasterCache, readCachedMasters } from './cache.js';
 import { syncMasterData } from './masters.js';
@@ -25,17 +26,31 @@ async function main() {
     throw error;
   }
   const database = openDatabase(config.databasePath, consoleLogger);
-  const client = createTallyClient({
-    host: config.tally.host,
-    port: config.tally.port,
-    companyName: config.tally.companyName,
-  });
   const cache = createTallyMasterCache({ db: database.db });
   try {
+    // Discover the company first, with no company name assumed at all —
+    // confirmed live that TYPE=Company with no SVCURRENTCOMPANY scope still
+    // returns exactly one row for a single-company deployment. Every other
+    // query below is then explicitly scoped to the discovered name.
+    consoleLogger.info('Discovering Tally company', {
+      host: config.tally.host,
+      port: config.tally.port,
+    });
+    const discoveryClient = createTallyClient({ host: config.tally.host, port: config.tally.port });
+    const company = await discoverCompany(discoveryClient);
+    cache.replaceAll('Company', [
+      { NAME: company.name, STATENAME: company.state },
+    ]);
+    consoleLogger.info('Discovered Tally company', { name: company.name, state: company.state });
+    const client = createTallyClient({
+      host: config.tally.host,
+      port: config.tally.port,
+      companyName: company.name,
+    });
     consoleLogger.info('Syncing Tally master data', {
       host: config.tally.host,
       port: config.tally.port,
-      company: config.tally.companyName,
+      company: company.name,
     });
     const results = await syncMasterData(client, cache);
     for (const result of results) {

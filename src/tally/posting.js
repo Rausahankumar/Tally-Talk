@@ -197,6 +197,8 @@ export async function postConfirmedTransaction(deps, input) {
       db: deps.db,
       gstConfig: deps.gstConfig,
       itemLedgerMappingStore: deps.itemLedgerMappingStore,
+      companyRevenueLedgerDefaultsStore: deps.companyRevenueLedgerDefaultsStore,
+      companyName: deps.companyName,
       godownConfig: deps.godownConfig,
       stockAvailabilityStore: deps.stockAvailabilityStore,
     },

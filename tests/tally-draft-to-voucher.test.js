@@ -7,9 +7,6 @@ import { buildSalesVoucherInput } from '../src/tally/draftToVoucher.js';
 import { createTestDatabase } from './helpers/testDatabase.js';
 const GST_CONFIG = {
   companyState: 'Delhi',
-  cgstLedger: 'CGST',
-  sgstLedger: 'SGST',
-  igstLedger: 'IGST',
   defaultPlaceOfSupply: null,
 };
 const GODOWN_CONFIG = {
@@ -52,9 +49,9 @@ beforeEach(() => {
   stockAvailabilityStore = createStockAvailabilityCache({ db: database.db });
   const masterCache = createTallyMasterCache({ db: database.db });
   masterCache.replaceAll('Ledger', [
-    { NAME: 'CGST', PARENT: 'Duties & Taxes' },
-    { NAME: 'SGST', PARENT: 'Duties & Taxes' },
-    { NAME: 'IGST', PARENT: 'Duties & Taxes' },
+    { NAME: 'CGST', PARENT: 'Duties & Taxes', TAXTYPE: 'GST', GSTDUTYHEAD: 'CGST' },
+    { NAME: 'SGST', PARENT: 'Duties & Taxes', TAXTYPE: 'GST', GSTDUTYHEAD: 'SGST/UTGST' },
+    { NAME: 'IGST', PARENT: 'Duties & Taxes', TAXTYPE: 'GST', GSTDUTYHEAD: 'IGST' },
     { NAME: 'Sales', PARENT: 'Sales Accounts' },
   ]);
   masterCache.replaceAll('Godown', [
@@ -122,6 +119,22 @@ describe('buildSalesVoucherInput — happy path', () => {
         { ledgerName: 'SGST', amount: 4500 },
       ],
     });
+  });
+  it('uses an explicit user-provided date instead of the injected "now", when validation resolved one', () => {
+    const d = draft();
+    const readiness = readyResult(d);
+    expect(readiness.ready).toBe(true);
+    const fixedToday = new Date('2026-09-07T00:00:00Z');
+    const explicitDate = new Date(2026, 8, 1); // 2026-09-01, as stated by the user
+    const result = buildSalesVoucherInput(
+      { db: database.db, companyName: COMPANY_NAME, now: () => fixedToday },
+      d,
+      { ...VALID_PHASE5, parsedDate: explicitDate },
+      readiness,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.voucher.date).toEqual(explicitDate);
   });
   it('splits GST as a single IGST allocation for an interstate sale', () => {
     const d = draft({ placeOfSupply: 'Uttar Pradesh' });
@@ -211,6 +224,51 @@ describe('buildSalesVoucherInput — happy path', () => {
       { NAME: 'Bricks', PARENT: '', BASEUNITS: 'Nos' },
     ]);
   }
+  it('builds a resolved voucher for a confirmed non-batch-tracked item with no cached stock — batch resolves to Tally\'s own implicit "Primary Batch"', () => {
+    createTallyMasterCache({ db: database.db }).replaceAll('StockItem', [
+      { NAME: 'Orange', PARENT: '', BASEUNITS: 'KG', ISBATCHWISEON: 'No' },
+    ]);
+    itemLedgerMappingStore.setMapping({
+      stockItemName: 'Orange',
+      salesLedger: 'Sales',
+      purchaseLedger: 'Purchase',
+    });
+    // No stock_availability row at all for Orange — nothing was ever synced.
+    const d = draft({
+      items: [{ itemName: 'Orange', quantity: 5, rate: 100, godown: 'Main Location' }],
+    });
+    const validation = {
+      ...VALID_PHASE5,
+      items: [
+        {
+          itemName: 'Orange',
+          stockItemMatch: { status: 'exact', matchedName: 'Orange', candidates: [] },
+          quantityValid: true,
+          rateValid: true,
+        },
+      ],
+    };
+    const readiness = readyResult(d, validation);
+    expect(readiness.ready).toBe(true);
+    expect(readiness.stockWarnings).toContainEqual(
+      expect.objectContaining({ itemIndex: 0, reason: 'no_data' }),
+    );
+    const result = buildSalesVoucherInput(
+      { db: database.db, companyName: COMPANY_NAME },
+      d,
+      validation,
+      readiness,
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.voucher.items[0]).toEqual(
+      expect.objectContaining({
+        stockItemName: 'Orange',
+        godown: 'Main Location',
+        batchName: 'Primary Batch',
+      }),
+    );
+  });
 });
 describe('buildSalesVoucherInput — fails closed', () => {
   it('refuses to build anything when readiness.ready is false, regardless of why', () => {
@@ -227,9 +285,9 @@ describe('buildSalesVoucherInput — fails closed', () => {
   });
   it('refuses a purchase voucher — this adapter only builds Sales vouchers', () => {
     createTallyMasterCache({ db: database.db }).replaceAll('Ledger', [
-      { NAME: 'CGST', PARENT: 'Duties & Taxes' },
-      { NAME: 'SGST', PARENT: 'Duties & Taxes' },
-      { NAME: 'IGST', PARENT: 'Duties & Taxes' },
+      { NAME: 'CGST', PARENT: 'Duties & Taxes', TAXTYPE: 'GST', GSTDUTYHEAD: 'CGST' },
+      { NAME: 'SGST', PARENT: 'Duties & Taxes', TAXTYPE: 'GST', GSTDUTYHEAD: 'SGST/UTGST' },
+      { NAME: 'IGST', PARENT: 'Duties & Taxes', TAXTYPE: 'GST', GSTDUTYHEAD: 'IGST' },
       { NAME: 'Sales', PARENT: 'Sales Accounts' },
       { NAME: 'Purchase', PARENT: 'Purchase Accounts' },
     ]);
@@ -348,6 +406,42 @@ describe('buildSalesVoucherInput — fails closed', () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.reasons.some((r) => r.includes('godown'))).toBe(true);
+  });
+  it('still refuses a confirmed batch-tracked item with no cached stock — the non-batch fallback never applies to it', () => {
+    createTallyMasterCache({ db: database.db }).replaceAll('StockItem', [
+      { NAME: 'Apple', PARENT: '', BASEUNITS: 'KG', ISBATCHWISEON: 'Yes' },
+    ]);
+    itemLedgerMappingStore.setMapping({
+      stockItemName: 'Apple',
+      salesLedger: 'Sales',
+      purchaseLedger: 'Purchase',
+    });
+    const d = draft({
+      items: [{ itemName: 'Apple', quantity: 5, rate: 100, godown: 'Main Location' }],
+    });
+    const validation = {
+      ...VALID_PHASE5,
+      items: [
+        {
+          itemName: 'Apple',
+          stockItemMatch: { status: 'exact', matchedName: 'Apple', candidates: [] },
+          quantityValid: true,
+          rateValid: true,
+        },
+      ],
+    };
+    const readiness = readyResult(d, validation);
+    expect(readiness.ready).toBe(true); // stock is still only a warning
+    expect(readiness.itemStock[0]?.resolvedBatch).toBeNull();
+    const result = buildSalesVoucherInput(
+      { db: database.db, companyName: COMPANY_NAME },
+      d,
+      validation,
+      readiness,
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reasons.some((r) => r.includes('batch'))).toBe(true);
   });
   it('refuses when no batch was resolved for an item — never falls back to a default batch name', () => {
     const d = draft();

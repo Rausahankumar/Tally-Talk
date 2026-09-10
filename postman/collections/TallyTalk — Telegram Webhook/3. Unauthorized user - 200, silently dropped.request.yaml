@@ -1,0 +1,27 @@
+$kind: http-request
+name: 3. Unauthorized user -> 200, silently dropped
+description: Correct secret, but from.id is NOT in TELEGRAM_ALLOWED_USER_IDS. Expect 200 {"ok":true} (Telegram must not be told to retry), but no Telegram reply is sent and no LLM call happens. Check the backend log for 'Rejected update from user not on allowlist'.
+url: "{{baseUrl}}/webhook/telegram"
+method: POST
+headers:
+  Content-Type: application/json
+  X-Telegram-Bot-Api-Secret-Token: "{{webhookSecret}}"
+body:
+  type: text
+  content: |-
+    {
+      "update_id": 100003,
+      "message": {
+        "message_id": 3,
+        "date": 1700000000,
+        "from": { "id": {{unauthorizedUserId}}, "is_bot": false, "first_name": "Stranger" },
+        "chat": { "id": {{unauthorizedUserId}}, "type": "private", "first_name": "Stranger" },
+        "text": "sell 100 bags to Ramesh"
+      }
+    }
+scripts:
+  - type: afterResponse
+    code: |-
+      pm.test('status is 200 (acknowledged, not rejected)', () => pm.response.to.have.status(200));
+      pm.test('body is ok:true', () => pm.expect(pm.response.json()).to.eql({ ok: true }));
+order: 3000

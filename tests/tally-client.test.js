@@ -95,6 +95,29 @@ describe('createTallyClient', () => {
     const [, init] = fetchImpl.mock.calls[0];
     expect(String(init.body)).not.toContain('CHILDOF');
   });
+  it('uses a caller-supplied parse function instead of the default flattening, when given', async () => {
+    const client = createTallyClient({
+      host: '127.0.0.1',
+      port: 9000,
+      companyName: 'Acme',
+      fetchImpl: fakeFetch({ body: SUCCESS_BODY }),
+    });
+    const customParse = vi.fn((xml) => [{ raw: xml }]);
+    const result = await client.exportCollection('Ledger', ['NAME'], { parse: customParse });
+    expect(customParse).toHaveBeenCalledTimes(1);
+    expect(customParse).toHaveBeenCalledWith(SUCCESS_BODY);
+    expect(result).toEqual([{ raw: SUCCESS_BODY }]);
+  });
+  it('falls back to the default flattening parse when no parse option is given', async () => {
+    const client = createTallyClient({
+      host: '127.0.0.1',
+      port: 9000,
+      companyName: 'Acme',
+      fetchImpl: fakeFetch({ body: SUCCESS_BODY }),
+    });
+    const rows = await client.exportCollection('Ledger', ['NAME']);
+    expect(rows).toEqual([{ NAME: 'Ramesh', PARENT: 'Sundry Debtors' }]);
+  });
   it('aborts the request after the configured timeout', async () => {
     const fetchImpl = vi.fn(
       (_url, init) =>

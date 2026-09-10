@@ -89,3 +89,7 @@ directory, and never try to prune it in place.
 | `CLAUDE.md` | Working instructions for Claude Code sessions |
 | `TallyChat - TallyTalk.md` | Product vision and requirements (source) |
 | `snoopy-swimming-walrus.md` | Approved foundation plan (source) |
+
+
+
+node --env-file=.env --watch src/server.js

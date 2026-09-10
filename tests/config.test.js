@@ -7,12 +7,7 @@ function validEnv(overrides = {}) {
     TELEGRAM_BOT_TOKEN: VALID_TOKEN,
     TELEGRAM_WEBHOOK_SECRET: VALID_SECRET,
     TELEGRAM_ALLOWED_USER_IDS: '111,222',
-    TALLY_COMPANY_NAME: 'Nirmal FMCG Traders Ltd',
     LLM_API_KEY: 'sk-ant-test-key-not-real',
-    COMPANY_STATE: 'Delhi',
-    CGST_LEDGER: 'CGST',
-    SGST_LEDGER: 'SGST',
-    IGST_LEDGER: 'IGST',
     ...overrides,
   };
 }
@@ -41,16 +36,11 @@ describe('loadConfig', () => {
   });
   it('reports every missing required key at once', () => {
     const problems = problemsFrom({});
-    expect(problems).toHaveLength(9);
+    expect(problems).toHaveLength(4);
     expect(problems.join('\n')).toContain('TELEGRAM_BOT_TOKEN');
     expect(problems.join('\n')).toContain('TELEGRAM_WEBHOOK_SECRET');
     expect(problems.join('\n')).toContain('TELEGRAM_ALLOWED_USER_IDS');
-    expect(problems.join('\n')).toContain('TALLY_COMPANY_NAME');
     expect(problems.join('\n')).toContain('LLM_API_KEY');
-    expect(problems.join('\n')).toContain('COMPANY_STATE');
-    expect(problems.join('\n')).toContain('CGST_LEDGER');
-    expect(problems.join('\n')).toContain('SGST_LEDGER');
-    expect(problems.join('\n')).toContain('IGST_LEDGER');
   });
   it('treats whitespace-only values as missing', () => {
     const problems = problemsFrom(validEnv({ TELEGRAM_BOT_TOKEN: '   ' }));
@@ -107,18 +97,14 @@ describe('loadConfig', () => {
     expect(config.tally.host).toBe('127.0.0.1');
     expect(config.tally.port).toBe(9000);
   });
-  it('reads an explicit Tally host, port and company name', () => {
-    const config = loadConfig(
-      validEnv({ TALLY_HOST: '10.0.0.5', TALLY_PORT: '9999', TALLY_COMPANY_NAME: 'Acme Ltd' }),
-    );
+  it('reads an explicit Tally host and port', () => {
+    const config = loadConfig(validEnv({ TALLY_HOST: '10.0.0.5', TALLY_PORT: '9999' }));
     expect(config.tally.host).toBe('10.0.0.5');
     expect(config.tally.port).toBe(9999);
-    expect(config.tally.companyName).toBe('Acme Ltd');
   });
-  it('requires a company name', () => {
-    expect(problemsFrom(validEnv({ TALLY_COMPANY_NAME: '' })).join('\n')).toContain(
-      'TALLY_COMPANY_NAME is required',
-    );
+  it('does not require or read a company name — it is discovered from Tally itself (tally/company.js), never hardcoded', () => {
+    const config = loadConfig(validEnv({ TALLY_COMPANY_NAME: 'Should be ignored' }));
+    expect(config.tally.companyName).toBeUndefined();
   });
   it('rejects an out-of-range Tally port', () => {
     expect(problemsFrom(validEnv({ TALLY_PORT: '99999' })).join('\n')).toContain('TALLY_PORT');
@@ -154,20 +140,11 @@ describe('loadConfig', () => {
       'LLM_PROVIDER must be "anthropic"',
     );
   });
-  it('reads a valid GST ledger configuration', () => {
-    const config = loadConfig(validEnv());
-    expect(config.gst).toEqual({
-      companyState: 'Delhi',
-      cgstLedger: 'CGST',
-      sgstLedger: 'SGST',
-      igstLedger: 'IGST',
-      defaultPlaceOfSupply: null,
-    });
-  });
-  it('rejects an unrecognised COMPANY_STATE', () => {
-    expect(problemsFrom(validEnv({ COMPANY_STATE: 'Narnia' })).join('\n')).toContain(
-      'not a recognised Indian state',
+  it('does not require or read company state, or CGST/SGST/IGST ledger names — company state is discovered from Tally, and GST ledgers are resolved dynamically from TAXTYPE/GSTDUTYHEAD (gst/gstLedgerResolution.js), never hardcoded', () => {
+    const config = loadConfig(
+      validEnv({ COMPANY_STATE: 'Should be ignored', CGST_LEDGER: 'Should be ignored' }),
     );
+    expect(config.gst).toEqual({ defaultPlaceOfSupply: null });
   });
   it('accepts an explicitly configured DEFAULT_PLACE_OF_SUPPLY', () => {
     const config = loadConfig(validEnv({ DEFAULT_PLACE_OF_SUPPLY: 'Uttar Pradesh' }));
@@ -181,14 +158,8 @@ describe('loadConfig', () => {
       'not a recognised Indian state',
     );
   });
-  it('defaults to no default godown when unset', () => {
-    expect(loadConfig(validEnv()).godown.defaultGodown).toBeNull();
-  });
-  it('accepts an explicitly configured DEFAULT_GODOWN', () => {
-    const config = loadConfig(validEnv({ DEFAULT_GODOWN: 'Main Location' }));
-    expect(config.godown.defaultGodown).toBe('Main Location');
-  });
-  it('treats a whitespace-only DEFAULT_GODOWN as unset', () => {
-    expect(loadConfig(validEnv({ DEFAULT_GODOWN: '   ' })).godown.defaultGodown).toBeNull();
+  it('does not require or read DEFAULT_GODOWN — the existing stock-availability-based auto-select/ask/fail-closed resolution (postingReadiness.js) already covers this', () => {
+    const config = loadConfig(validEnv({ DEFAULT_GODOWN: 'Should be ignored' }));
+    expect(config.godown).toBeUndefined();
   });
 });
