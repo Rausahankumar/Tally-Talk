@@ -22,8 +22,8 @@
  * retried or redelivered Confirm callback that somehow reached this far a
  * second time cannot post twice.
  */
-import { checkPostingReadiness } from '../gst/postingReadiness.js';
 import { buildSalesVoucherInput } from '../tally/draftToVoucher.js';
+import { resolveReadinessWithRefresh } from '../tally/masterResolutionRefresh.js';
 import { PostingRejectedError, postConfirmedTransaction } from '../tally/posting.js';
 import {
   buildCancelledText,
@@ -31,6 +31,7 @@ import {
   buildPostedResultText,
   buildPostingFailedText,
   buildRejectedConfirmationText,
+  buildTallyUnavailableText,
 } from './messages.js';
 async function reject(deps, turn, reason) {
   deps.auditLog.record({
@@ -52,19 +53,23 @@ async function reject(deps, turn, reason) {
  */
 async function postConfirmedDraft(deps, turn, draft, validation) {
   const actor = { kind: 'user', telegramUserId: turn.userId, chatId: turn.chatId };
-  const readiness = checkPostingReadiness(
-    {
-      db: deps.db,
-      gstConfig: deps.gstConfig,
-      itemLedgerMappingStore: deps.itemLedgerMappingStore,
-      companyRevenueLedgerDefaultsStore: deps.companyRevenueLedgerDefaultsStore,
-      companyName: deps.companyName,
-      godownConfig: deps.godownConfig,
-      stockAvailabilityStore: deps.stockAvailabilityStore,
-    },
-    draft,
-    validation,
-  );
+  // Re-checked fresh here (readiness can drift between preview and Confirm —
+  // unchanged, existing behaviour), with the same refresh-and-retry safety
+  // net as the first understanding of the message: a non-exact/unsafe result
+  // tries one live Tally refresh before being trusted as final.
+  const resolvedReadiness = await resolveReadinessWithRefresh(deps, draft, validation);
+  if (resolvedReadiness.refreshFailed) {
+    deps.auditLog.record({
+      correlationId: turn.correlationId,
+      type: 'tally.posting.rejected',
+      channel: 'telegram',
+      actor,
+      data: { draftVersionId: turn.draftVersionId, reason: 'tally_unavailable_at_confirm' },
+    });
+    await deps.telegram.sendMessage(turn.chatId, buildTallyUnavailableText());
+    return;
+  }
+  const readiness = resolvedReadiness.readiness;
   if (!readiness.ready) {
     deps.auditLog.record({
       correlationId: turn.correlationId,
@@ -117,6 +122,7 @@ async function postConfirmedDraft(deps, turn, draft, validation) {
         companyName: deps.companyName,
         godownConfig: deps.godownConfig,
         stockAvailabilityStore: deps.stockAvailabilityStore,
+        syncCoordinator: deps.syncCoordinator,
       },
       {
         draftVersionId: turn.draftVersionId,

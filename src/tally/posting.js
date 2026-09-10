@@ -17,7 +17,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { CONVERSATION_DRAFTS_TABLE, TALLY_POSTINGS_TABLE } from '../db/schema.js';
-import { checkPostingReadiness } from '../gst/postingReadiness.js';
+import { resolveReadinessWithRefresh } from './masterResolutionRefresh.js';
 import { buildSalesVoucherXml, parseImportResponse } from './postingXml.js';
 const DEFAULT_TIMEOUT_MS = 15_000;
 export function createTallyPostingClient(options) {
@@ -192,19 +192,26 @@ export async function postConfirmedTransaction(deps, input) {
   // deleted in Tally, or the mapping changed, between confirmation and this
   // call. GST/ledger selection is never taken from `input.voucher` blindly —
   // it must still agree with what backend configuration says is correct now.
-  const readiness = checkPostingReadiness(
-    {
-      db: deps.db,
-      gstConfig: deps.gstConfig,
-      itemLedgerMappingStore: deps.itemLedgerMappingStore,
-      companyRevenueLedgerDefaultsStore: deps.companyRevenueLedgerDefaultsStore,
-      companyName: deps.companyName,
-      godownConfig: deps.godownConfig,
-      stockAvailabilityStore: deps.stockAvailabilityStore,
-    },
-    context.draft,
-    context.validation,
-  );
+  // This is the last check before an irreversible write, so it carries the
+  // same refresh-and-retry safety net as every earlier readiness check: a
+  // non-exact/unsafe result tries one live Tally refresh before this is
+  // trusted as final, and a refresh failure blocks rather than posting
+  // against possibly-stale data.
+  const resolvedReadiness = await resolveReadinessWithRefresh(deps, context.draft, context.validation);
+  if (resolvedReadiness.refreshFailed) {
+    deps.auditLog.record({
+      correlationId,
+      type: 'tally.posting.rejected',
+      channel: 'system',
+      actor,
+      data: { draftVersionId: input.draftVersionId, reason: 'tally_unavailable_at_posting' },
+    });
+    throw new PostingRejectedError(
+      'tally_unavailable',
+      "Could not verify this transaction with Tally right now. Please try again in a moment.",
+    );
+  }
+  const readiness = resolvedReadiness.readiness;
   if (!readiness.ready) {
     deps.auditLog.record({
       correlationId,

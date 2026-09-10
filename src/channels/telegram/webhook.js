@@ -117,6 +117,7 @@ export function createTelegramWebhookRouter(deps) {
             companyName: deps.companyName,
             godownConfig: deps.godownConfig,
             stockAvailabilityStore: deps.stockAvailabilityStore,
+            syncCoordinator: deps.syncCoordinator,
             auditLog: deps.auditLog,
           },
           { chatId: message.chatId, userId: message.userId, text: message.text, correlationId },
@@ -136,6 +137,7 @@ export function createTelegramWebhookRouter(deps) {
             companyName: deps.companyName,
             postingStore: deps.postingStore,
             postingClient: deps.postingClient,
+            syncCoordinator: deps.syncCoordinator,
           },
           {
             chatId: callbackQuery.chatId,
