@@ -41,6 +41,7 @@ export function createApp(deps) {
       companyName: deps.companyName,
       postingStore: deps.postingStore,
       postingClient: deps.postingClient,
+      syncCoordinator: deps.syncCoordinator,
       auditLog: deps.auditLog,
       logger,
     }),

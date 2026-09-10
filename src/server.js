@@ -12,9 +12,11 @@ import { createConversationStore } from './conversation/store.js';
 import { openDatabase } from './db/sqlite.js';
 import { createCompanyRevenueLedgerDefaultsStore } from './gst/companyRevenueLedgerDefaults.js';
 import { createItemLedgerMappingStore } from './gst/itemLedgerMapping.js';
-import { CompanyResolutionError, resolveCachedCompany } from './tally/company.js';
 import { createStockAvailabilityCache } from './tally/stockAvailabilityCache.js';
 import { createPostingStore, createTallyPostingClient } from './tally/posting.js';
+import { runFullSync } from './tally/fullSync.js';
+import { startupSync } from './tally/startupSync.js';
+import { createSyncCoordinator } from './tally/syncCoordinator.js';
 import { createAnthropicClient } from './llm/client.js';
 import { createTelegramClient } from './channels/telegram/client.js';
 import { consoleLogger } from './logger.js';
@@ -23,25 +25,6 @@ function loadConfigOrExit() {
     return loadConfig();
   } catch (error) {
     if (error instanceof ConfigError) {
-      consoleLogger.error(error.message);
-      process.exit(1);
-    }
-    throw error;
-  }
-}
-/**
- * The server never talks to Tally directly except for the final posting
- * write (see posting.js) — company identity/state is read from the cache
- * `npm run tally:sync` already populated, never queried live here, and never
- * a hardcoded value. Fails closed at startup, the same way a missing
- * TELEGRAM_BOT_TOKEN already does — nothing works without knowing exactly
- * one company to operate against.
- */
-function resolveCompanyOrExit(db) {
-  try {
-    return resolveCachedCompany(db);
-  } catch (error) {
-    if (error instanceof CompanyResolutionError) {
       consoleLogger.error(error.message);
       process.exit(1);
     }
@@ -69,15 +52,25 @@ function installShutdownHandlers(server, closeDatabase) {
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
 }
-function main() {
+async function main() {
   const config = loadConfigOrExit();
   const database = openDatabase(config.databasePath, consoleLogger);
   consoleLogger.info('Audit database ready', { path: config.databasePath });
-  const company = resolveCompanyOrExit(database.db);
-  consoleLogger.info('Tally company resolved from cache', {
-    name: company.name,
-    state: company.state,
-  });
+  const company = await startupSync(database.db, config, { logger: consoleLogger });
+  // Built once, shared by every request from here on — this single instance
+  // is what makes concurrent runtime refreshes coalesce into one sync
+  // instead of one per request (see syncCoordinator.js). Always scoped to
+  // the company startup just resolved — a runtime refresh never re-picks a
+  // company (see fullSync.js's module doc).
+  const syncCoordinator = createSyncCoordinator(() =>
+    runFullSync({
+      host: config.tally.host,
+      port: config.tally.port,
+      db: database.db,
+      logger: consoleLogger,
+      companyName: company.name,
+    }),
+  );
   const app = createApp({
     config,
     companyName: company.name,
@@ -95,6 +88,7 @@ function main() {
     stockAvailabilityStore: createStockAvailabilityCache({ db: database.db }),
     postingStore: createPostingStore(database.db),
     postingClient: createTallyPostingClient({ host: config.tally.host, port: config.tally.port }),
+    syncCoordinator,
     auditLog: createAuditLog({ db: database.db, logger: consoleLogger }),
     logger: consoleLogger,
   });
@@ -108,11 +102,9 @@ function main() {
   });
   installShutdownHandlers(server, database.close);
 }
-try {
-  main();
-} catch (error) {
+main().catch((error) => {
   consoleLogger.error('Failed to start TallyTalk', {
     reason: error instanceof Error ? error.message : String(error),
   });
   process.exit(1);
-}
+});

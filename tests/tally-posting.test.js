@@ -129,6 +129,14 @@ afterEach(() => {
 function auditRows() {
   return database.db.prepare('SELECT type, data FROM audit_events ORDER BY id').all();
 }
+/**
+ * A real syncCoordinator talks to Tally live — never appropriate here. This
+ * fake always reports success without touching the cache, so the
+ * refresh-and-retry postConfirmedTransaction now does (see
+ * masterResolutionRefresh.js) is a harmless no-op against these fixtures:
+ * whatever a test seeded is still exactly what the retry sees.
+ */
+const noOpSyncCoordinator = { ensureFreshSync: async () => ({ ok: true, result: {} }) };
 function deps(client) {
   return {
     db: database.db,
@@ -139,6 +147,7 @@ function deps(client) {
     itemLedgerMappingStore,
     godownConfig: GODOWN_CONFIG,
     stockAvailabilityStore,
+    syncCoordinator: noOpSyncCoordinator,
   };
 }
 describe('createTallyPostingClient', () => {

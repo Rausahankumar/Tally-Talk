@@ -55,6 +55,16 @@ export function buildConfigurationErrorText(blockers) {
     'Please contact whoever manages this bot to fix the configuration.',
   ].join('\n');
 }
+/**
+ * A resolved name genuinely could not be verified — Tally was unreachable
+ * for the live refresh that a non-exact match always tries first (see
+ * masterResolutionRefresh.js). Deliberately distinct from "not found": it
+ * might well exist, this just couldn't check right now, so it never claims
+ * otherwise.
+ */
+export function buildTallyUnavailableText() {
+  return "I couldn't verify this with Tally right now. Please try again in a moment.";
+}
 function formatAmount(value) {
   return value.toLocaleString('en-IN');
 }

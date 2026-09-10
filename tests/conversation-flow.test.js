@@ -26,6 +26,15 @@ const USER_B = 222;
 const UNAUTHORIZED_USER = 999;
 const CHAT_A = 5150;
 const CHAT_B = 6250;
+/**
+ * A real syncCoordinator talks to Tally live — never appropriate here. This
+ * fake always reports success without touching the cache at all, so a
+ * refresh-and-retry (see masterResolutionRefresh.js) is a harmless no-op:
+ * whatever the fixture already seeded is still exactly what the retry sees,
+ * preserving every existing assertion in this file unchanged. Dedicated
+ * coverage of the refresh mechanism itself lives in its own test file.
+ */
+const noOpSyncCoordinator = { ensureFreshSync: async () => ({ ok: true, result: {} }) };
 const config = {
   port: 3000,
   nodeEnv: 'test',
@@ -213,6 +222,7 @@ beforeEach(() => {
     stockAvailabilityStore,
     postingStore,
     postingClient,
+    syncCoordinator: noOpSyncCoordinator,
     auditLog,
     logger: silentLogger,
   });
@@ -608,6 +618,7 @@ describe('Phase 8 — GST and ledger configuration in the conversation flow', ()
       stockAvailabilityStore,
       postingStore,
       postingClient,
+      syncCoordinator: noOpSyncCoordinator,
       auditLog,
       logger: silentLogger,
     });

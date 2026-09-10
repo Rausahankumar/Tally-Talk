@@ -7,14 +7,10 @@
  * posting come after the user acts on the preview this produces.
  */
 import { buildCallbackData } from '../channels/telegram/types.js';
-import {
-  checkPostingReadiness,
-  findGodownSelectionNeeded,
-  isOnlyMissingPlaceOfSupply,
-} from '../gst/postingReadiness.js';
+import { findGodownSelectionNeeded, isOnlyMissingPlaceOfSupply } from '../gst/postingReadiness.js';
 import { LLMConnectionError, LLMResponseError } from '../llm/client.js';
 import { DraftValidationError } from '../llm/schema.js';
-import { validateTransactionDraft } from '../validation/validateDraft.js';
+import { resolveDraftWithRefresh } from '../tally/masterResolutionRefresh.js';
 import {
   applyClarification,
   deriveClarification,
@@ -26,6 +22,7 @@ import {
   buildConfigurationErrorText,
   buildFollowUpRequestText,
   buildPreviewText,
+  buildTallyUnavailableText,
   buildUnderstandingFailedText,
 } from './messages.js';
 const OPEN_STATUSES = ['collecting', 'ready_for_confirmation'];
@@ -83,7 +80,13 @@ export async function handleIncomingTextMessage(deps, turn) {
     });
     candidateDraft = existing !== null ? mergeDraft(existing.draft, extracted) : extracted;
   }
-  const validation = validateTransactionDraft(deps.db, candidateDraft, deps.itemLedgerMappingStore);
+  // Resolves party/item names and, once those are clean, GST/ledger/godown
+  // readiness — with one live Tally refresh-and-retry if the cache alone
+  // can't resolve something exactly (see masterResolutionRefresh.js's module
+  // doc for why this exists: a stale cache must never silently fuzzy-match
+  // to the wrong real ledger/item).
+  const resolved = await resolveDraftWithRefresh(deps, candidateDraft);
+  const validation = resolved.validation;
   // The canonical draft from here on: rate/GST filled in from trusted
   // per-item configuration wherever the user left them unstated, the same
   // way a resolved party or item name already flows back onto the draft via
@@ -94,28 +97,32 @@ export async function handleIncomingTextMessage(deps, turn) {
     type: 'validation.completed',
     channel: 'telegram',
     actor,
-    data: { isValid: validation.isValid, issueCodes: validation.issues.map((issue) => issue.code) },
+    data: {
+      isValid: validation.isValid,
+      issueCodes: validation.issues.map((issue) => issue.code),
+      tallyRefreshAttempted: resolved.refreshAttempted,
+    },
   });
+  if (resolved.refreshFailed) {
+    // A non-exact match tried a live refresh and Tally could not be reached
+    // — never fall back to treating the stale first attempt as final; it
+    // might resolve fine once Tally is reachable again, so this is neither
+    // "ready" nor "not found", just "couldn't check right now".
+    deps.auditLog.record({
+      correlationId: turn.correlationId,
+      type: 'gst.determination.completed',
+      channel: 'telegram',
+      actor,
+      data: { ready: false, treatmentType: null, blockerCodes: ['tally_unavailable'] },
+    });
+    await deps.telegram.sendMessage(turn.chatId, buildTallyUnavailableText());
+    return;
+  }
   let pending = deriveClarification(validation);
   // GST/ledger readiness is only worth checking once Phase 5 is clean and
   // there is no outstanding party/item ambiguity to resolve first — asking
   // about Place of Supply before the basics are sorted would be confusing.
-  const readiness =
-    validation.isValid && pending === null
-      ? checkPostingReadiness(
-          {
-            db: deps.db,
-            gstConfig: deps.gstConfig,
-            itemLedgerMappingStore: deps.itemLedgerMappingStore,
-            companyRevenueLedgerDefaultsStore: deps.companyRevenueLedgerDefaultsStore,
-            companyName: deps.companyName,
-            godownConfig: deps.godownConfig,
-            stockAvailabilityStore: deps.stockAvailabilityStore,
-          },
-          candidateDraft,
-          validation,
-        )
-      : null;
+  const readiness = validation.isValid && pending === null ? resolved.readiness : null;
   if (readiness !== null) {
     deps.auditLog.record({
       correlationId: turn.correlationId,
