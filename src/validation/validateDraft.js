@@ -123,52 +123,95 @@ function validateParty(db, draft, issues) {
   return match;
 }
 /**
- * GST percent resolution, in order: the user's stated value; else a
- * Tally-derived rate (`gstRateHistory`, verified CGST+SGST=IGST, as of the
- * transaction date) when every item that resolved to a real stock item
- * agrees on one value; else the trusted per-item configuration
- * (`itemLedgerMappingStore`), same "must agree" rule; else unresolvable, and
- * the user is asked. Tally is deliberately checked *before* the operator
- * config here (the reverse of rate's precedence — see `resolveLineItemRate`)
- * since a verified live GST classification is more authoritative than a
- * possibly-stale manual override, whereas Tally's Standard Price is the
- * opposite case.
+ * The voucher-wide `draft.gstPercent`, validated once, up front — never
+ * per item. An explicitly stated value that fails validation is a real
+ * problem the user typed, reported exactly once at draft level (never
+ * re-reported per item); it is deliberately NOT treated as "unstated" and
+ * does not fall through to a per-item Tally/config lookup, matching this
+ * field's original behaviour before per-item GST existed. Returns `null`
+ * both when nothing was stated and when what was stated was invalid — the
+ * `wasInvalid` flag is what lets callers tell those two apart without a
+ * second validity check.
  */
-function resolveGstPercent(db, draft, items, itemLedgerMappingStore, issues, transactionDateIso) {
-  if (draft.gstPercent !== null) {
-    const valid = isValidGstPercent(draft.gstPercent);
+function resolveVoucherLevelGstPercent(draft, issues) {
+  if (draft.gstPercent === null) return { value: null, wasInvalid: false };
+  const valid = isValidGstPercent(draft.gstPercent);
+  if (!valid) {
+    issues.push({
+      code: 'invalid_gst_percent',
+      message: `${draft.gstPercent}% is not a recognised GST rate.`,
+    });
+    return { value: null, wasInvalid: true };
+  }
+  return { value: draft.gstPercent, wasInvalid: false };
+}
+/**
+ * GST percent resolution for ONE line item, in order:
+ *  1. `item.gstPercent`, explicitly stated for this item — never overridden
+ *     by anything else, including the voucher-wide value.
+ *  2. `draft.gstPercent`, the voucher-wide fallback, when valid.
+ *  3. Tally's own `gstRateHistory` for this item (verified CGST+SGST=IGST,
+ *     as of the transaction date) — checked before the operator config
+ *     below since a verified live GST classification is more authoritative
+ *     than a possibly-stale manual override (the reverse of rate's
+ *     precedence — see `resolveLineItemRate`, where Tally's Standard Price
+ *     is the less-trusted source).
+ *  4. The trusted per-item configuration (`itemLedgerMappingStore.gstPercent`).
+ *  5. Unresolved — this item alone is reported as `missing_gst_percent`,
+ *     never a whole-draft failure that also blocks a sibling item that
+ *     resolved fine (see DECISIONS.md / the per-line-GST architecture note).
+ *
+ * Items are deliberately never forced to agree with each other: two items
+ * with two different real Tally GST rates (e.g. 18% and 5%) each resolve
+ * independently, rather than requiring a single blended value the way this
+ * function's draft-level predecessor once did.
+ */
+function resolveLineItemGstPercent(
+  db,
+  item,
+  stockItemMatch,
+  itemLedgerMappingStore,
+  issues,
+  index,
+  transactionDateIso,
+  voucherGstPercent,
+) {
+  const explicitItemGstPercent = item.gstPercent ?? null;
+  if (explicitItemGstPercent !== null) {
+    const valid = isValidGstPercent(explicitItemGstPercent);
     if (!valid) {
       issues.push({
         code: 'invalid_gst_percent',
-        message: `${draft.gstPercent}% is not a recognised GST rate.`,
+        message: `${explicitItemGstPercent}% is not a recognised GST rate.`,
+        itemIndex: index,
       });
+      return { gstPercentValid: false, resolvedGstPercent: null };
     }
-    return { gstPercentValid: valid, resolvedGstPercent: valid ? draft.gstPercent : null };
+    return { gstPercentValid: true, resolvedGstPercent: explicitItemGstPercent };
   }
-  const matchedItemNames = items
-    .map((item) => item.stockItemMatch.matchedName)
-    .filter((name) => name !== null);
-  if (matchedItemNames.length > 0) {
-    const tallyRates = matchedItemNames
-      .map((name) => resolveTallyGstPercent(db, name, transactionDateIso))
-      .filter((rate) => rate !== null);
-    const distinctTally = [...new Set(tallyRates)];
-    if (distinctTally.length === 1) {
-      return { gstPercentValid: true, resolvedGstPercent: distinctTally[0] };
-    }
+  if (voucherGstPercent.wasInvalid) {
+    // The one voucher-level `invalid_gst_percent` issue already explains
+    // this — no further tier is attempted, and no redundant per-item issue
+    // is added, matching the original draft-level short-circuit exactly.
+    return { gstPercentValid: false, resolvedGstPercent: null };
   }
-  if (itemLedgerMappingStore !== null) {
-    const mappedRates = items
-      .map((item) => item.stockItemMatch.matchedName)
-      .filter((name) => name !== null)
-      .map((name) => itemLedgerMappingStore.getMapping(name)?.gstPercent ?? null)
-      .filter((rate) => rate !== null);
-    const distinct = [...new Set(mappedRates)];
-    if (distinct.length === 1 && isValidGstPercent(distinct[0])) {
-      return { gstPercentValid: true, resolvedGstPercent: distinct[0] };
+  if (voucherGstPercent.value !== null) {
+    return { gstPercentValid: true, resolvedGstPercent: voucherGstPercent.value };
+  }
+  if (stockItemMatch.matchedName !== null) {
+    const tallyRate = resolveTallyGstPercent(db, stockItemMatch.matchedName, transactionDateIso);
+    if (tallyRate !== null) {
+      return { gstPercentValid: true, resolvedGstPercent: tallyRate };
     }
   }
-  issues.push({ code: 'missing_gst_percent', message: 'No GST rate was stated.' });
+  if (itemLedgerMappingStore !== null && stockItemMatch.matchedName !== null) {
+    const mapping = itemLedgerMappingStore.getMapping(stockItemMatch.matchedName);
+    const mappedGstPercent = mapping?.gstPercent ?? null;
+    if (mappedGstPercent !== null && isValidGstPercent(mappedGstPercent)) {
+      return { gstPercentValid: true, resolvedGstPercent: mappedGstPercent };
+    }
+  }
+  issues.push({ code: 'missing_gst_percent', message: 'No GST rate was stated.', itemIndex: index });
   return { gstPercentValid: false, resolvedGstPercent: null };
 }
 /**
@@ -195,7 +238,7 @@ function validateDate(draft, issues) {
  * per-item configuration (`itemLedgerMappingStore`); else — sales only —
  * Tally's own `standardPriceHistory`, as of the transaction date. Operator
  * config is checked *before* Tally here (the reverse of GST's precedence —
- * see `resolveGstPercent`) since Tally's Standard Price is a figure the
+ * see `resolveLineItemGstPercent`) since Tally's Standard Price is a figure the
  * company keeps on file that may not reflect what is actually charged
  * (confirmed live for a real item), so a deliberate manual override always
  * wins over it. No configuration, no Tally record, and no stated rate means
@@ -239,7 +282,16 @@ function resolveLineItemRate(
   issues.push({ code: 'missing_rate', message: 'No rate was stated.', itemIndex: index });
   return { rateValid: false, resolvedRate: null };
 }
-function validateLineItem(db, item, index, issues, voucherType, itemLedgerMappingStore, transactionDateIso) {
+function validateLineItem(
+  db,
+  item,
+  index,
+  issues,
+  voucherType,
+  itemLedgerMappingStore,
+  transactionDateIso,
+  voucherGstPercent,
+) {
   const hasItemName = item.itemName.trim() !== '';
   if (!hasItemName) {
     issues.push({
@@ -290,7 +342,25 @@ function validateLineItem(db, item, index, issues, voucherType, itemLedgerMappin
     index,
     transactionDateIso,
   );
-  return { itemName: item.itemName, stockItemMatch, quantityValid, rateValid, resolvedRate };
+  const { gstPercentValid, resolvedGstPercent } = resolveLineItemGstPercent(
+    db,
+    item,
+    stockItemMatch,
+    itemLedgerMappingStore,
+    issues,
+    index,
+    transactionDateIso,
+    voucherGstPercent,
+  );
+  return {
+    itemName: item.itemName,
+    stockItemMatch,
+    quantityValid,
+    rateValid,
+    resolvedRate,
+    gstPercentValid,
+    resolvedGstPercent,
+  };
 }
 /**
  * @param itemLedgerMappingStore Optional. When omitted, rate/GST resolution
@@ -314,17 +384,34 @@ export function validateTransactionDraft(db, draft, itemLedgerMappingStore = nul
   if (draft.items.length === 0) {
     issues.push({ code: 'missing_items', message: 'No line items were stated.' });
   }
+  // Validated once, up front — never per item; see resolveVoucherLevelGstPercent.
+  const voucherGstPercent = resolveVoucherLevelGstPercent(draft, issues);
   const items = draft.items.map((item, index) =>
-    validateLineItem(db, item, index, issues, draft.voucherType, itemLedgerMappingStore, transactionDateIso),
+    validateLineItem(
+      db,
+      item,
+      index,
+      issues,
+      draft.voucherType,
+      itemLedgerMappingStore,
+      transactionDateIso,
+      voucherGstPercent,
+    ),
   );
-  const { gstPercentValid, resolvedGstPercent } = resolveGstPercent(
-    db,
-    draft,
-    items,
-    itemLedgerMappingStore,
-    issues,
-    transactionDateIso,
-  );
+  // Draft-level gstPercent/gstPercentValid are derived from the per-item
+  // resolution below, kept only for backward compatibility (existing single-
+  // rate callers, and the preview's voucher-wide summary line) — the real
+  // source of truth from here on is each item's own resolvedGstPercent.
+  // `gstPercentValid` is true only when every item resolved successfully;
+  // `resolvedGstPercent` is a single value only when every item happens to
+  // agree — genuinely mixed rates (or any unresolved item) yield `null`
+  // here, never a value silently borrowed from one item and applied to all.
+  const gstPercentValid = items.every((item) => item.gstPercentValid);
+  const distinctResolvedGstPercents = [
+    ...new Set(items.map((item) => item.resolvedGstPercent).filter((value) => value !== null)),
+  ];
+  const resolvedGstPercent =
+    gstPercentValid && distinctResolvedGstPercents.length === 1 ? distinctResolvedGstPercents[0] : null;
   // The same draft shape, with rate/GST filled in from resolution wherever
   // the user left them unstated — the single canonical draft every later
   // stage (readiness, storage, preview, the posting adapter) uses from here
@@ -333,7 +420,11 @@ export function validateTransactionDraft(db, draft, itemLedgerMappingStore = nul
   const resolvedDraft = {
     ...draft,
     gstPercent: resolvedGstPercent,
-    items: draft.items.map((item, index) => ({ ...item, rate: items[index].resolvedRate })),
+    items: draft.items.map((item, index) => ({
+      ...item,
+      rate: items[index].resolvedRate,
+      gstPercent: items[index].resolvedGstPercent,
+    })),
   };
   return {
     isValid: issues.length === 0,

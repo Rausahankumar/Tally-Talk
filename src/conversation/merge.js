@@ -37,6 +37,7 @@ function mergeItems(existingItems, incomingItems) {
       quantity: incomingItem.quantity ?? existingItem.quantity,
       rate: incomingItem.rate ?? existingItem.rate,
       godown: incomingItem.godown ?? existingItem.godown,
+      gstPercent: incomingItem.gstPercent ?? existingItem.gstPercent ?? null,
     };
   });
 }

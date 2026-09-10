@@ -39,8 +39,9 @@ export const TRANSACTION_DRAFT_TOOL_SCHEMA = {
           quantity: { type: ['number', 'null'] },
           rate: { type: ['number', 'null'] },
           godown: { type: ['string', 'null'] },
+          gstPercent: { type: ['number', 'null'] },
         },
-        required: ['itemName', 'quantity', 'rate', 'godown'],
+        required: ['itemName', 'quantity', 'rate', 'godown', 'gstPercent'],
         additionalProperties: false,
       },
     },
@@ -84,7 +85,7 @@ function validateLineItem(value, index, problems) {
     problems.push(`items[${index}] must be an object`);
     return null;
   }
-  const { itemName, quantity, rate, godown, ...rest } = value;
+  const { itemName, quantity, rate, godown, gstPercent, ...rest } = value;
   const extra = Object.keys(rest);
   if (extra.length > 0) {
     problems.push(`items[${index}] has unexpected fields: ${extra.join(', ')}`);
@@ -105,7 +106,11 @@ function validateLineItem(value, index, problems) {
     problems.push(`items[${index}].godown must be a non-empty string or null`);
     return null;
   }
-  return { itemName, quantity, rate, godown };
+  if (gstPercent !== null && gstPercent !== undefined && typeof gstPercent !== 'number') {
+    problems.push(`items[${index}].gstPercent must be a number or null`);
+    return null;
+  }
+  return { itemName, quantity, rate, godown, gstPercent: gstPercent ?? null };
 }
 /**
  * Validate a candidate draft with no coercion: a value either matches the

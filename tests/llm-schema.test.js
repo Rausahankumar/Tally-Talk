@@ -3,7 +3,7 @@ import { DraftValidationError, parseTransactionDraft } from '../src/llm/schema.j
 const VALID_DRAFT = {
   voucherType: 'sales',
   partyName: 'Ramesh',
-  items: [{ itemName: 'cement', quantity: 100, rate: 500, godown: null }],
+  items: [{ itemName: 'cement', quantity: 100, rate: 500, godown: null, gstPercent: null }],
   gstPercent: 18,
   placeOfSupply: null,
   date: null,
@@ -42,8 +42,15 @@ describe('parseTransactionDraft — accepts a well-formed draft', () => {
       items: [{ itemName: 'cement', quantity: null, rate: null, godown: null }],
     };
     expect(parseTransactionDraft(draft).items).toEqual([
-      { itemName: 'cement', quantity: null, rate: null, godown: null },
+      { itemName: 'cement', quantity: null, rate: null, godown: null, gstPercent: null },
     ]);
+  });
+  it('accepts an explicit GST rate on a line item', () => {
+    const draft = {
+      ...VALID_DRAFT,
+      items: [{ itemName: 'cement', quantity: 100, rate: 500, godown: null, gstPercent: 12 }],
+    };
+    expect(parseTransactionDraft(draft).items[0]?.gstPercent).toBe(12);
   });
   it('accepts multiple line items', () => {
     const draft = {
@@ -134,6 +141,14 @@ describe('parseTransactionDraft — rejects malformed drafts', () => {
   });
   it('rejects a non-number, non-null gstPercent', () => {
     expect(problemsFrom({ ...VALID_DRAFT, gstPercent: '18%' }).join('\n')).toContain('gstPercent');
+  });
+  it('rejects a non-number, non-null gstPercent on a line item', () => {
+    expect(
+      problemsFrom({
+        ...VALID_DRAFT,
+        items: [{ itemName: 'cement', quantity: 1, rate: 1, godown: null, gstPercent: '12%' }],
+      }).join('\n'),
+    ).toContain('gstPercent');
   });
   it('rejects a non-string, non-null godown on a line item', () => {
     expect(

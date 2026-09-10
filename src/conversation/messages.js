@@ -102,12 +102,23 @@ export function buildPreviewText(draft, validation, readiness = null) {
     const godown = readiness?.itemGodowns?.[index]?.godown ?? item.godown ?? null;
     const batch = readiness?.itemStock?.[index]?.resolvedBatch ?? null;
     let line = `  • ${resolvedName} — qty ${quantity}, rate ₹${rate}`;
+    // Per-item resolved GST — see validateDraft.js's per-line resolution.
+    // Absent (undefined) for any caller/fixture predating that field.
+    const itemGstPercent = item.gstPercent ?? null;
+    if (itemGstPercent !== null) line += `, GST ${itemGstPercent}%`;
     if (godown !== null) line += `, godown ${godown}`;
     if (batch !== null) line += `, batch ${batch}`;
     lines.push(line);
   });
   lines.push('');
-  lines.push(`GST rate: ${draft.gstPercent}%`);
+  // `draft.gstPercent` is only ever a single value when every item resolved
+  // to the same rate (see validateTransactionDraft's draft-level derivation)
+  // — a genuinely mixed-rate voucher shows nothing here, since the per-item
+  // lines above already show each item's own real rate; there is no single
+  // voucher-wide figure left to summarise.
+  if (draft.gstPercent !== null) {
+    lines.push(`GST rate: ${draft.gstPercent}%`);
+  }
   const gstTreatment = readiness?.gstTreatment ?? null;
   if (gstTreatment !== null) {
     const basis =

@@ -17,7 +17,7 @@ function draft(overrides = {}) {
   return {
     voucherType: 'sales',
     partyName: 'Suresh & Sons',
-    items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500, godown: null }],
+    items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500, godown: null, gstPercent: 18 }],
     gstPercent: 18,
     placeOfSupply: 'Delhi',
     missingFields: [],
@@ -109,6 +109,7 @@ describe('buildSalesVoucherInput — happy path', () => {
           unit: 'Kg',
           rate: 500,
           amount: 50000,
+          gstPercent: 18,
           ledgerAllocation: { ledgerName: 'Sales', amount: 50000 },
           godown: 'Main Location',
           batchName: '1',
@@ -152,7 +153,7 @@ describe('buildSalesVoucherInput — happy path', () => {
   });
   it('computes each item amount as quantity * rate, and mirrors it into the ledger allocation', () => {
     const d = draft({
-      items: [{ itemName: 'Steel Rods', quantity: 3, rate: 33.33, godown: null }],
+      items: [{ itemName: 'Steel Rods', quantity: 3, rate: 33.33, godown: null, gstPercent: 18 }],
     });
     const readiness = readyResult(d);
     const result = buildSalesVoucherInput(
@@ -178,8 +179,8 @@ describe('buildSalesVoucherInput — happy path', () => {
     ]);
     const d = draft({
       items: [
-        { itemName: 'Steel Rods', quantity: 10, rate: 500, godown: 'Main Location' },
-        { itemName: 'Bricks', quantity: 20, rate: 20, godown: 'Warehouse B' },
+        { itemName: 'Steel Rods', quantity: 10, rate: 500, godown: 'Main Location', gstPercent: 18 },
+        { itemName: 'Bricks', quantity: 20, rate: 20, godown: 'Warehouse B', gstPercent: 18 },
       ],
     });
     const validation = {
@@ -224,6 +225,194 @@ describe('buildSalesVoucherInput — happy path', () => {
       { NAME: 'Bricks', PARENT: '', BASEUNITS: 'Nos' },
     ]);
   }
+  describe('mixed-rate vouchers (per-line GST)', () => {
+    function masterCacheForShampoo() {
+      createTallyMasterCache({ db: database.db }).replaceAll('StockItem', [
+        { NAME: 'Steel Rods', PARENT: '', BASEUNITS: 'Kg' },
+        { NAME: 'Anti-Dandruff Shampoos', PARENT: '', BASEUNITS: 'Nos' },
+      ]);
+    }
+    function mixedRateValidation() {
+      return {
+        ...VALID_PHASE5,
+        items: [
+          VALID_PHASE5.items[0],
+          {
+            itemName: 'Anti-Dandruff Shampoos',
+            stockItemMatch: { status: 'exact', matchedName: 'Anti-Dandruff Shampoos', candidates: [] },
+            quantityValid: true,
+            rateValid: true,
+          },
+        ],
+      };
+    }
+    beforeEach(() => {
+      masterCacheForShampoo();
+      itemLedgerMappingStore.setMapping({
+        stockItemName: 'Anti-Dandruff Shampoos',
+        salesLedger: 'Sales',
+        purchaseLedger: 'Purchase',
+      });
+      stockAvailabilityStore.replaceAllForItem('Anti-Dandruff Shampoos', [
+        { batchName: '1', godownName: 'Main Location', quantity: 200, unit: 'Nos' },
+      ]);
+    });
+    it('3. two items with different GST rates, interstate — two separate IGST allocations, one per rate bucket', () => {
+      const d = draft({
+        placeOfSupply: 'Uttar Pradesh',
+        items: [
+          { itemName: 'Steel Rods', quantity: 5, rate: 1000, godown: 'Main Location', gstPercent: 18 },
+          {
+            itemName: 'Anti-Dandruff Shampoos',
+            quantity: 5,
+            rate: 125,
+            godown: 'Main Location',
+            gstPercent: 5,
+          },
+        ],
+      });
+      const validation = mixedRateValidation();
+      const readiness = readyResult(d, validation);
+      expect(readiness.ready).toBe(true);
+      const result = buildSalesVoucherInput(
+        { db: database.db, companyName: COMPANY_NAME },
+        d,
+        validation,
+        readiness,
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      // Steel Rods: 5000 taxable @ 18% -> IGST 900. Shampoos: 625 taxable @
+      // 5% -> IGST 31.25. Buckets are sorted by rate ascending (5% before
+      // 18%) — deterministic regardless of item order in the draft.
+      expect(result.voucher.taxLedgerAllocations).toEqual([
+        { ledgerName: 'IGST', amount: 31.25 },
+        { ledgerName: 'IGST', amount: 900 },
+      ]);
+    });
+    it('4. two items with different GST rates, intrastate — separate CGST/SGST amounts per rate bucket', () => {
+      const d = draft({
+        items: [
+          { itemName: 'Steel Rods', quantity: 5, rate: 1000, godown: 'Main Location', gstPercent: 18 },
+          {
+            itemName: 'Anti-Dandruff Shampoos',
+            quantity: 5,
+            rate: 125,
+            godown: 'Main Location',
+            gstPercent: 5,
+          },
+        ],
+      });
+      const validation = mixedRateValidation();
+      const readiness = readyResult(d, validation);
+      expect(readiness.ready).toBe(true);
+      const result = buildSalesVoucherInput(
+        { db: database.db, companyName: COMPANY_NAME },
+        d,
+        validation,
+        readiness,
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.voucher.taxLedgerAllocations).toEqual([
+        { ledgerName: 'CGST', amount: 15.63 },
+        { ledgerName: 'SGST', amount: 15.63 },
+        { ledgerName: 'CGST', amount: 450 },
+        { ledgerName: 'SGST', amount: 450 },
+      ]);
+    });
+    it('10. a mixed-rate voucher still balances exactly to zero (credit side matches the negated party amount)', () => {
+      const d = draft({
+        placeOfSupply: 'Uttar Pradesh',
+        items: [
+          { itemName: 'Steel Rods', quantity: 5, rate: 1000, godown: 'Main Location', gstPercent: 18 },
+          {
+            itemName: 'Anti-Dandruff Shampoos',
+            quantity: 5,
+            rate: 125,
+            godown: 'Main Location',
+            gstPercent: 5,
+          },
+        ],
+      });
+      const validation = mixedRateValidation();
+      const readiness = readyResult(d, validation);
+      const result = buildSalesVoucherInput(
+        { db: database.db, companyName: COMPANY_NAME },
+        d,
+        validation,
+        readiness,
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const itemsTotal = result.voucher.items.reduce((sum, item) => sum + item.amount, 0);
+      const taxTotal = result.voucher.taxLedgerAllocations.reduce((sum, tax) => sum + tax.amount, 0);
+      // Mirrors postingXml.js's own creditSideTotal/partyAmount computation —
+      // the party entry is always exactly the negative of this sum, so as
+      // long as this identity holds, the voucher balances to zero by
+      // construction, regardless of how many rate buckets contributed to it.
+      expect(itemsTotal + taxTotal).toBeCloseTo(5625 + 900 + 31.25, 2);
+    });
+    it('14. does not compute GST from the total voucher taxable amount at one rate — the pre-fix bug', () => {
+      const d = draft({
+        placeOfSupply: 'Uttar Pradesh',
+        items: [
+          { itemName: 'Steel Rods', quantity: 5, rate: 1000, godown: 'Main Location', gstPercent: 18 },
+          {
+            itemName: 'Anti-Dandruff Shampoos',
+            quantity: 5,
+            rate: 125,
+            godown: 'Main Location',
+            gstPercent: 5,
+          },
+        ],
+      });
+      const validation = mixedRateValidation();
+      const readiness = readyResult(d, validation);
+      const result = buildSalesVoucherInput(
+        { db: database.db, companyName: COMPANY_NAME },
+        d,
+        validation,
+        readiness,
+      );
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const totalTax = result.voucher.taxLedgerAllocations.reduce((sum, tax) => sum + tax.amount, 0);
+      // The old bug: (5000 + 625) * 18% = 1012.50, blending Shampoo's real 5%
+      // into Orange's 18%. The correct, per-bucket total is 900 + 31.25 =
+      // 931.25 — a different, smaller figure that proves no single blended
+      // rate was used anywhere in this calculation.
+      expect(totalTax).toBeCloseTo(931.25, 2);
+      expect(totalTax).not.toBeCloseTo(1012.5, 2);
+    });
+    it('one resolvable item and one item with an unresolvable GST percent: only that item blocks, with a precise reason', () => {
+      const d = draft({
+        items: [
+          { itemName: 'Steel Rods', quantity: 5, rate: 1000, godown: 'Main Location', gstPercent: 18 },
+          {
+            itemName: 'Anti-Dandruff Shampoos',
+            quantity: 5,
+            rate: 125,
+            godown: 'Main Location',
+            gstPercent: null,
+          },
+        ],
+      });
+      const validation = mixedRateValidation();
+      const readiness = readyResult(d, validation);
+      const result = buildSalesVoucherInput(
+        { db: database.db, companyName: COMPANY_NAME },
+        d,
+        validation,
+        readiness,
+      );
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.reasons).toHaveLength(1);
+      expect(result.reasons[0]).toContain('Anti-Dandruff Shampoos');
+      expect(result.reasons[0]).toContain('GST percent');
+    });
+  });
   it('builds a resolved voucher for a confirmed non-batch-tracked item with no cached stock — batch resolves to Tally\'s own implicit "Primary Batch"', () => {
     createTallyMasterCache({ db: database.db }).replaceAll('StockItem', [
       { NAME: 'Orange', PARENT: '', BASEUNITS: 'KG', ISBATCHWISEON: 'No' },
@@ -235,7 +424,7 @@ describe('buildSalesVoucherInput — happy path', () => {
     });
     // No stock_availability row at all for Orange — nothing was ever synced.
     const d = draft({
-      items: [{ itemName: 'Orange', quantity: 5, rate: 100, godown: 'Main Location' }],
+      items: [{ itemName: 'Orange', quantity: 5, rate: 100, godown: 'Main Location', gstPercent: 18 }],
     });
     const validation = {
       ...VALID_PHASE5,
@@ -485,8 +674,10 @@ describe('buildSalesVoucherInput — fails closed', () => {
     );
     expect(result.ok).toBe(false);
   });
-  it('refuses when GST percent is missing from the draft', () => {
-    const d = draft({ gstPercent: null });
+  it('refuses when GST percent is missing for an item — GST is resolved per item, never a voucher-wide gate', () => {
+    const d = draft({
+      items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500, godown: null, gstPercent: null }],
+    });
     const result = buildSalesVoucherInput(
       { db: database.db, companyName: COMPANY_NAME },
       d,
@@ -494,9 +685,13 @@ describe('buildSalesVoucherInput — fails closed', () => {
       fullyReadyResult(),
     );
     expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reasons.some((r) => r.includes('GST percent'))).toBe(true);
   });
   it('collects every problem in one pass rather than stopping at the first', () => {
-    const d = draft({ gstPercent: null });
+    const d = draft({
+      items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500, godown: null, gstPercent: null }],
+    });
     const validation = { ...VALID_PHASE5, partyMatch: null };
     const readiness = { ...fullyReadyResult(), gstTreatment: null };
     const result = buildSalesVoucherInput(

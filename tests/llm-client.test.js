@@ -4,7 +4,7 @@ import { DraftValidationError } from '../src/llm/schema.js';
 const VALID_DRAFT_INPUT = {
   voucherType: 'sales',
   partyName: 'Ramesh',
-  items: [{ itemName: 'cement', quantity: 100, rate: 500, godown: null }],
+  items: [{ itemName: 'cement', quantity: 100, rate: 500, godown: null, gstPercent: null }],
   gstPercent: 18,
   placeOfSupply: null,
   date: null,
