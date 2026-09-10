@@ -49,7 +49,7 @@ describe('mergeDraft', () => {
       items: [{ itemName: 'Steel Rods', quantity: 5, rate: 100, godown: null }],
     });
     expect(mergeDraft(existing, incoming).items).toEqual([
-      { itemName: 'Steel Rods', quantity: 5, rate: 100, godown: null },
+      { itemName: 'Steel Rods', quantity: 5, rate: 100, godown: null, gstPercent: null },
     ]);
   });
   it('keeps an existing date when a follow-up message states none — regression: an intervening unrelated message must not erase a previously stated date', () => {
@@ -80,7 +80,7 @@ describe('mergeDraft', () => {
       items: [{ itemName: 'apple', quantity: null, rate: 1000, godown: null }],
     });
     expect(mergeDraft(existing, incoming).items).toEqual([
-      { itemName: 'apple', quantity: 5, rate: 1000, godown: null },
+      { itemName: 'apple', quantity: 5, rate: 1000, godown: null, gstPercent: null },
     ]);
   });
   it('regression: a bare quantity follow-up for the same item does not wipe out its already-known rate', () => {
@@ -91,7 +91,7 @@ describe('mergeDraft', () => {
       items: [{ itemName: 'apple', quantity: 5, rate: null, godown: null }],
     });
     expect(mergeDraft(existing, incoming).items).toEqual([
-      { itemName: 'apple', quantity: 5, rate: 1000, godown: null },
+      { itemName: 'apple', quantity: 5, rate: 1000, godown: null, gstPercent: null },
     ]);
   });
   it('a fully restated single item still fully replaces, since every field it states wins anyway', () => {
@@ -102,7 +102,18 @@ describe('mergeDraft', () => {
       items: [{ itemName: 'Apple', quantity: 10, rate: 900, godown: 'Warehouse B' }],
     });
     expect(mergeDraft(existing, incoming).items).toEqual([
-      { itemName: 'Apple', quantity: 10, rate: 900, godown: 'Warehouse B' },
+      { itemName: 'Apple', quantity: 10, rate: 900, godown: 'Warehouse B', gstPercent: null },
+    ]);
+  });
+  it('merges a per-item GST rate stated in a follow-up onto the existing item, same as rate', () => {
+    const existing = draft({
+      items: [{ itemName: 'Apple', quantity: 5, rate: 1000, godown: null, gstPercent: null }],
+    });
+    const incoming = draft({
+      items: [{ itemName: 'apple', quantity: null, rate: null, godown: null, gstPercent: 5 }],
+    });
+    expect(mergeDraft(existing, incoming).items).toEqual([
+      { itemName: 'apple', quantity: 5, rate: 1000, godown: null, gstPercent: 5 },
     ]);
   });
   it('replaces items entirely when the item counts differ, since that is a real change in what is being transacted', () => {

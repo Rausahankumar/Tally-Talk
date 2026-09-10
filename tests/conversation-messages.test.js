@@ -49,6 +49,51 @@ describe('buildPreviewText — shows resolved values, not just what the user sta
     expect(text).toContain('GST rate: 18%');
     expect(text).toContain('Intrastate (CGST + SGST) — Place of Supply: Delhi');
   });
+  it('does not crash or print a bogus rate when an item has no gstPercent field at all (pre-existing fixture shape)', () => {
+    const text = buildPreviewText(DRAFT, VALIDATION, READINESS);
+    expect(text).not.toContain('undefined');
+    expect(text).not.toContain('null%');
+  });
+  it('shows each item\'s own GST rate on its own line for a mixed-rate voucher, and omits the single voucher-wide summary line', () => {
+    const mixedRateDraft = {
+      ...DRAFT,
+      items: [
+        { itemName: 'Orange', quantity: 5, rate: 1000, godown: null, gstPercent: 18 },
+        { itemName: 'Anti-Dandruff Shampoos', quantity: 5, rate: 125, godown: null, gstPercent: 5 },
+      ],
+      gstPercent: null, // draft-level: no single value can express two different rates
+    };
+    const mixedValidation = {
+      ...VALIDATION,
+      items: [
+        {
+          itemName: 'Orange',
+          stockItemMatch: { status: 'exact', matchedName: 'Orange', candidates: [] },
+          quantityValid: true,
+          rateValid: true,
+        },
+        {
+          itemName: 'Anti-Dandruff Shampoos',
+          stockItemMatch: { status: 'exact', matchedName: 'Anti-Dandruff Shampoos', candidates: [] },
+          quantityValid: true,
+          rateValid: true,
+        },
+      ],
+    };
+    const text = buildPreviewText(mixedRateDraft, mixedValidation, READINESS);
+    expect(text).toContain('Orange — qty 5, rate ₹1,000, GST 18%');
+    expect(text).toContain('Anti-Dandruff Shampoos — qty 5, rate ₹125, GST 5%');
+    expect(text).not.toMatch(/^GST rate: /m);
+  });
+  it('still shows the single voucher-wide summary line when every item happens to share the same rate', () => {
+    const uniformDraft = {
+      ...DRAFT,
+      items: [{ itemName: 'Apple', quantity: 5, rate: 1000, godown: null, gstPercent: 18 }],
+      gstPercent: 18,
+    };
+    const text = buildPreviewText(uniformDraft, VALIDATION, READINESS);
+    expect(text).toContain('GST rate: 18%');
+  });
   it('shows an explicit date when the draft has one', () => {
     const text = buildPreviewText({ ...DRAFT, date: '2026-09-01' }, VALIDATION, READINESS);
     expect(text).toContain('Date: 2026-09-01');

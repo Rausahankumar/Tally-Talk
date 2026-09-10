@@ -500,6 +500,176 @@ describe('validateTransactionDraft - resolving rate/GST from Tally-cached histor
     expect(result.issues).toContainEqual(expect.objectContaining({ code: 'missing_gst_percent' }));
   });
 });
+describe('validateTransactionDraft - per-line GST resolution (mixed-rate vouchers)', () => {
+  // Real numbers: Orange is 18% (see ORANGE_GST_HISTORY above), a shampoo
+  // genuinely taxed at 5% is a different stock item entirely — this mirrors
+  // the real "Orange 18% + Anti-Dandruff Shampoos 5%" case that motivated
+  // per-line GST in the first place.
+  const ORANGE_GST_HISTORY = [
+    { applicableFrom: '2025-04-01', states: [{ state: 'Any', cgst: 9, sgst: 9, igst: 18 }] },
+  ];
+  const SHAMPOO_GST_HISTORY = [
+    { applicableFrom: '2025-08-01', states: [{ state: 'Any', cgst: 2.5, sgst: 2.5, igst: 5 }] },
+  ];
+  function cacheOrangeAndShampoo() {
+    cache.replaceAll('StockItem', [
+      { NAME: 'ACC Cement OPC 43 Grade', PARENT: 'Building Materials', BASEUNITS: 'Bags' },
+      { NAME: 'Cement Bags', PARENT: 'Building Materials', BASEUNITS: 'Bags' },
+      { NAME: 'Steel Rods', PARENT: 'Building Materials', BASEUNITS: 'Kg' },
+      { NAME: 'Orange', PARENT: 'Primary', BASEUNITS: 'KG', gstRateHistory: ORANGE_GST_HISTORY },
+      {
+        NAME: 'Anti-Dandruff Shampoos',
+        PARENT: 'Primary',
+        BASEUNITS: 'Nos',
+        gstRateHistory: SHAMPOO_GST_HISTORY,
+      },
+    ]);
+  }
+  function mixedRateDraft(overrides = {}) {
+    return validDraft({
+      items: [
+        { itemName: 'Orange', quantity: 5, rate: 1000, godown: null },
+        { itemName: 'Anti-Dandruff Shampoos', quantity: 5, rate: 125, godown: null },
+      ],
+      gstPercent: null,
+      date: '2026-09-01',
+      ...overrides,
+    });
+  }
+  it('1 & 3. two items with different Tally-derived GST rates each resolve their own rate, no forced single value', () => {
+    cacheOrangeAndShampoo();
+    const result = validateTransactionDraft(database.db, mixedRateDraft());
+    expect(result.isValid).toBe(true);
+    expect(result.items[0]?.gstPercentValid).toBe(true);
+    expect(result.items[0]?.resolvedGstPercent).toBe(18);
+    expect(result.items[1]?.gstPercentValid).toBe(true);
+    expect(result.items[1]?.resolvedGstPercent).toBe(5);
+    // Draft-level resolvedGstPercent cannot express two different values —
+    // it stays null (never one item's rate silently applied to the other).
+    expect(result.resolvedGstPercent).toBeNull();
+    expect(result.issues.some((i) => i.code === 'missing_gst_percent')).toBe(false);
+  });
+  it('resolvedDraft carries each item\'s own resolved GST percent', () => {
+    cacheOrangeAndShampoo();
+    const result = validateTransactionDraft(database.db, mixedRateDraft());
+    expect(result.resolvedDraft.items[0]?.gstPercent).toBe(18);
+    expect(result.resolvedDraft.items[1]?.gstPercent).toBe(5);
+  });
+  it('2. two items that happen to share the same Tally-derived rate resolve identically to the pre-existing single-rate path', () => {
+    cache.replaceAll('StockItem', [
+      { NAME: 'ACC Cement OPC 43 Grade', PARENT: 'Building Materials', BASEUNITS: 'Bags' },
+      { NAME: 'Cement Bags', PARENT: 'Building Materials', BASEUNITS: 'Bags' },
+      { NAME: 'Steel Rods', PARENT: 'Building Materials', BASEUNITS: 'Kg' },
+      { NAME: 'Orange', PARENT: 'Primary', BASEUNITS: 'KG', gstRateHistory: ORANGE_GST_HISTORY },
+      { NAME: 'Apple', PARENT: 'Primary', BASEUNITS: 'Nos', gstRateHistory: ORANGE_GST_HISTORY }, // also 18%
+    ]);
+    const result = validateTransactionDraft(
+      database.db,
+      mixedRateDraft({
+        items: [
+          { itemName: 'Orange', quantity: 5, rate: 1000, godown: null },
+          { itemName: 'Apple', quantity: 5, rate: 50, godown: null },
+        ],
+      }),
+    );
+    expect(result.items[0]?.resolvedGstPercent).toBe(18);
+    expect(result.items[1]?.resolvedGstPercent).toBe(18);
+    // Both items agree, so the draft-level summary can still express one value.
+    expect(result.resolvedGstPercent).toBe(18);
+  });
+  it('5. an explicit per-item GST override wins over Tally for that item only', () => {
+    cacheOrangeAndShampoo();
+    const result = validateTransactionDraft(
+      database.db,
+      mixedRateDraft({
+        items: [
+          { itemName: 'Orange', quantity: 5, rate: 1000, godown: null, gstPercent: 28 }, // explicit override
+          { itemName: 'Anti-Dandruff Shampoos', quantity: 5, rate: 125, godown: null },
+        ],
+      }),
+    );
+    expect(result.items[0]?.resolvedGstPercent).toBe(28); // override, not Tally's 18
+    expect(result.items[1]?.resolvedGstPercent).toBe(5); // untouched, still from Tally
+  });
+  it('6. an explicit voucher-wide GST override resolves every item that did not state its own', () => {
+    cacheOrangeAndShampoo();
+    const result = validateTransactionDraft(database.db, mixedRateDraft({ gstPercent: 12 }));
+    expect(result.items[0]?.resolvedGstPercent).toBe(12);
+    expect(result.items[1]?.resolvedGstPercent).toBe(12);
+    expect(result.resolvedGstPercent).toBe(12);
+  });
+  it('7. an item-level override still wins even when a voucher-wide GST value is also stated', () => {
+    cacheOrangeAndShampoo();
+    const result = validateTransactionDraft(
+      database.db,
+      mixedRateDraft({
+        gstPercent: 12,
+        items: [
+          { itemName: 'Orange', quantity: 5, rate: 1000, godown: null, gstPercent: 28 },
+          { itemName: 'Anti-Dandruff Shampoos', quantity: 5, rate: 125, godown: null },
+        ],
+      }),
+    );
+    expect(result.items[0]?.resolvedGstPercent).toBe(28); // item override beats voucher-wide
+    expect(result.items[1]?.resolvedGstPercent).toBe(12); // sibling falls back to voucher-wide
+  });
+  it('8. one resolvable item and one genuinely unresolved item: only the unresolved one is reported', () => {
+    cache.replaceAll('StockItem', [
+      { NAME: 'ACC Cement OPC 43 Grade', PARENT: 'Building Materials', BASEUNITS: 'Bags' },
+      { NAME: 'Cement Bags', PARENT: 'Building Materials', BASEUNITS: 'Bags' },
+      { NAME: 'Steel Rods', PARENT: 'Building Materials', BASEUNITS: 'Kg' }, // no gstRateHistory
+      { NAME: 'Orange', PARENT: 'Primary', BASEUNITS: 'KG', gstRateHistory: ORANGE_GST_HISTORY },
+    ]);
+    const result = validateTransactionDraft(
+      database.db,
+      mixedRateDraft({
+        items: [
+          { itemName: 'Orange', quantity: 5, rate: 1000, godown: null }, // resolves from Tally
+          { itemName: 'Steel Rods', quantity: 5, rate: 500, godown: null }, // no history, no config
+        ],
+      }),
+    );
+    expect(result.items[0]?.gstPercentValid).toBe(true);
+    expect(result.items[0]?.resolvedGstPercent).toBe(18);
+    expect(result.items[1]?.gstPercentValid).toBe(false);
+    expect(result.items[1]?.resolvedGstPercent).toBeNull();
+    const gstIssues = result.issues.filter((i) => i.code === 'missing_gst_percent');
+    expect(gstIssues).toHaveLength(1);
+    expect(gstIssues[0]).toMatchObject({ itemIndex: 1 });
+  });
+  it('an invalid explicit per-item GST rate blocks only that item, with no fallback attempted for it', () => {
+    cacheOrangeAndShampoo();
+    const result = validateTransactionDraft(
+      database.db,
+      mixedRateDraft({
+        items: [
+          { itemName: 'Orange', quantity: 5, rate: 1000, godown: null, gstPercent: 45 }, // not a real slab
+          { itemName: 'Anti-Dandruff Shampoos', quantity: 5, rate: 125, godown: null },
+        ],
+      }),
+    );
+    expect(result.items[0]?.gstPercentValid).toBe(false);
+    expect(result.items[0]?.resolvedGstPercent).toBeNull();
+    expect(result.items[1]?.resolvedGstPercent).toBe(5); // sibling unaffected
+    expect(result.issues).toContainEqual(
+      expect.objectContaining({ code: 'invalid_gst_percent', itemIndex: 0 }),
+    );
+  });
+  it('an invalid voucher-wide GST value is reported once and does not silently force every item to fail without trying Tally', () => {
+    cacheOrangeAndShampoo();
+    const result = validateTransactionDraft(database.db, mixedRateDraft({ gstPercent: 45 }));
+    // Exactly one invalid_gst_percent, draft-level (no itemIndex) — never
+    // repeated per item.
+    const invalidIssues = result.issues.filter((i) => i.code === 'invalid_gst_percent');
+    expect(invalidIssues).toHaveLength(1);
+    expect(invalidIssues[0].itemIndex).toBeUndefined();
+    // Per the original short-circuit behaviour, an invalid voucher-wide value
+    // is treated as unusable — it does not proceed past the original
+    // immediate-return semantics for items with no item-level override.
+    expect(result.items[0]?.gstPercentValid).toBe(false);
+    expect(result.items[1]?.gstPercentValid).toBe(false);
+  });
+});
 describe('validateTransactionDraft - multiple issues at once', () => {
   it('reports every problem in a single pass rather than stopping at the first', () => {
     const result = validateTransactionDraft(database.db, {
