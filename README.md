@@ -13,20 +13,25 @@ causes a write on its own.
 
 ## Status
 
-Phase 6 (Telegram → extraction → validation → preview → Confirm/Cancel) is
-complete and wired end to end. Phase 7 adds a fully built and tested Tally
-**posting mechanism** (`src/tally/posting.ts`) — deterministic voucher XML,
-HTTP Import, response parsing, exactly-once duplicate/concurrency protection.
-Phase 8 adds deterministic **GST determination** (Company State vs. Place of
-Supply — never the party's state) and **application-side Sales/Purchase ledger
-mapping** (`src/gst/`), both backend-controlled and both validated against the
-cached Tally masters before a transaction can reach confirmation. The LLM may
-extract a stated Place of Supply; it never chooses a ledger or decides GST
-treatment. Posting is still **not wired to a real confirmed draft** — godown
-handling remains unresolved, and this project does not guess at what posts to
-a real accounting system. **No transaction has ever been posted to Tally by
-this project.** A separate, manual command syncs and caches TallyPrime master
-data read-only. See `PROJECT_STATUS.md`.
+The full pipeline is wired end to end: Telegram → LLM extraction → deterministic
+validation → GST/ledger/godown/batch readiness → preview → Confirm/Cancel →
+Tally posting (`src/tally/posting.js`) — deterministic voucher XML, HTTP
+Import, response parsing, exactly-once duplicate/concurrency protection. Real
+sales vouchers have been posted successfully to a live TallyPrime instance.
+
+GST determination (Company State vs. Place of Supply — never the party's
+state) is fully dynamic, resolved per transaction from the cached Tally
+masters (`src/gst/`) — nothing is hardcoded per client. GST is resolved **per
+line item**, not once per voucher, so a sale with items at genuinely different
+real GST rates resolves correctly. Sales/Purchase ledger resolution follows an
+explicit precedence: an item-level override (`item_ledger_mappings`) beats a
+company-level default beats automatic single-candidate resolution from Tally's
+own ledger groups beats a clear block when genuinely ambiguous — a brand-new
+stock item or ledger created in Tally needs no manual mapping to be usable.
+
+A separate, manual command (`npm run tally:sync`) syncs and caches TallyPrime
+master data read-only; the running server never talks to Tally except for the
+final, user-confirmed posting write. See `PROJECT_STATUS.md`.
 
 ## Requirements
 
@@ -53,7 +58,6 @@ Never commit `.env`.
 | `npm run tally:sync` | Sync and cache TallyPrime master data (read-only) |
 | `npm test` | Run the test suite once |
 | `npm run test:watch` | Run tests in watch mode |
-| `npm run typecheck` | Type-check without emitting |
 
 ## Endpoints
 
@@ -89,7 +93,3 @@ directory, and never try to prune it in place.
 | `CLAUDE.md` | Working instructions for Claude Code sessions |
 | `TallyChat - TallyTalk.md` | Product vision and requirements (source) |
 | `snoopy-swimming-walrus.md` | Approved foundation plan (source) |
-
-
-
-node --env-file=.env --watch src/server.js
