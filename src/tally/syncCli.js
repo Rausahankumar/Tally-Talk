@@ -39,7 +39,7 @@ async function main() {
     const discoveryClient = createTallyClient({ host: config.tally.host, port: config.tally.port });
     const company = await discoverCompany(discoveryClient);
     cache.replaceAll('Company', [
-      { NAME: company.name, STATENAME: company.state },
+      { NAME: company.name, STATENAME: company.state, GUID: company.guid },
     ]);
     consoleLogger.info('Discovered Tally company', { name: company.name, state: company.state });
     const client = createTallyClient({
