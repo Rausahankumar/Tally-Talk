@@ -47,5 +47,18 @@ export function createTelegramClient(botToken, fetchImpl = globalThis.fetch) {
         ...(text === undefined ? {} : { text }),
       });
     },
+    /**
+     * Registers `url` as this bot's webhook, with `secretToken` as the value
+     * Telegram will then send back on every request via
+     * `X-Telegram-Bot-Api-Secret-Token` (see webhook.js's `secretMatches`) —
+     * the same secret already configured for this deployment, never a
+     * separate value. Idempotent: calling this again with the same url/secret
+     * Telegram already has on file is a safe no-op per Telegram's own API
+     * contract, so a caller may call it on every startup without first
+     * checking whether it is already correctly registered.
+     */
+    async setWebhook(url, secretToken) {
+      await call('setWebhook', { url, secret_token: secretToken });
+    },
   };
 }

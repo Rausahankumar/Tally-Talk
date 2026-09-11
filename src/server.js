@@ -19,6 +19,7 @@ import { startupSync } from './tally/startupSync.js';
 import { createSyncCoordinator } from './tally/syncCoordinator.js';
 import { createAnthropicClient } from './llm/client.js';
 import { createTelegramClient } from './channels/telegram/client.js';
+import { registerWebhook } from './channels/telegram/webhookRegistration.js';
 import { consoleLogger } from './logger.js';
 function loadConfigOrExit() {
   try {
@@ -71,11 +72,12 @@ async function main() {
       companyName: company.name,
     }),
   );
+  const telegram = createTelegramClient(config.telegram.botToken);
   const app = createApp({
     config,
     companyName: company.name,
     companyState: company.state,
-    telegram: createTelegramClient(config.telegram.botToken),
+    telegram,
     llm: createAnthropicClient({
       apiKey: config.llm.apiKey,
       model: config.llm.model,
@@ -92,13 +94,14 @@ async function main() {
     auditLog: createAuditLog({ db: database.db, logger: consoleLogger }),
     logger: consoleLogger,
   });
-  const server = app.listen(config.port, () => {
+  const server = app.listen(config.port, async () => {
     consoleLogger.info('TallyTalk listening', {
       port: config.port,
       env: config.nodeEnv,
       webhookPath: TELEGRAM_WEBHOOK_PATH,
       authorizedUsers: config.telegram.allowedUserIds.size,
     });
+    await registerWebhook(telegram, config, TELEGRAM_WEBHOOK_PATH, consoleLogger);
   });
   installShutdownHandlers(server, database.close);
 }

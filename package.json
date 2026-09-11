@@ -5,7 +5,7 @@
   "description": "Conversational AI assistant that creates TallyPrime vouchers from natural-language Telegram messages, with backend validation and explicit user confirmation.",
   "type": "module",
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13.0"
   },
   "scripts": {
     "start": "node --env-file=.env src/server.js",
