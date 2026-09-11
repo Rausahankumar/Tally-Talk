@@ -700,7 +700,7 @@ describe('checkPostingReadiness — G3: real-company regression (Orange/Itworks/
       itemLedgerMappingStore,
       companyRevenueLedgerDefaultsStore: companyDefaultsStore,
       companyName: 'Nirmal FMCG Traders Ltd',
-      godownConfig: { defaultGodown: null },
+      godownConfig: { defaultGodown: 'Main Location' },
       stockAvailabilityStore: stock,
     };
     return { db2, deps };
@@ -891,11 +891,14 @@ describe('checkPostingReadiness — I: godown resolution', () => {
     expect(result.ready).toBe(true);
     expect(result.itemGodowns).toEqual([{ itemIndex: 0, godown: 'Main Location' }]);
   });
-  it('asks the user to choose when no godown/default is stated and multiple godowns have recorded stock', () => {
-    // The shared fixture stocks Steel Rods in both Main Location and
-    // Warehouse B — with no godown stated and no default configured, this is
-    // a genuine choice, not a hard block, regardless of how much is recorded
-    // in each.
+  it('no godown stated, no default configured, and multiple godowns have recorded stock — still blocks with godown_missing, never a stock-based choice', () => {
+    // No stock-based auto-selection or "choose one" step exists any more:
+    // precedence is exactly two tiers (explicit, then configured default).
+    // Recorded stock in multiple godowns is irrelevant to this decision.
+    stockAvailabilityStore.replaceAllForItem('Steel Rods', [
+      { batchName: 'Primary Batch', godownName: 'Main Location', quantity: 1000, unit: 'Kg' },
+      { batchName: 'Primary Batch', godownName: 'Warehouse B', quantity: 500, unit: 'Kg' },
+    ]);
     const result = checkPostingReadiness(
       {
         db: database.db,
@@ -912,21 +915,17 @@ describe('checkPostingReadiness — I: godown resolution', () => {
     );
     expect(result.ready).toBe(false);
     expect(result.blockers).toContainEqual(
-      expect.objectContaining({ code: 'godown_selection_required', itemIndex: 0 }),
+      expect.objectContaining({ code: 'godown_missing', itemIndex: 0 }),
     );
   });
-  it('auto-selects the single godown with recorded stock when no godown/default is stated', () => {
-    // Only Main Location has any recorded row for this item — Warehouse B has
-    // none — so there is exactly one valid answer, not a choice to ask about.
-    stockAvailabilityStore.replaceAllForItem('Steel Rods', [
-      { batchName: 'Primary Batch', godownName: 'Main Location', quantity: 1000, unit: 'Kg' },
-    ]);
+  it('no godown stated, item has ZERO stock_availability records — still resolves to the configured default, never blocked on missing stock data', () => {
+    stockAvailabilityStore.replaceAllForItem('Steel Rods', []); // no stock anywhere — e.g. a newly created StockItem
     const result = checkPostingReadiness(
       {
         db: database.db,
         gstConfig: GST_CONFIG,
         itemLedgerMappingStore,
-        godownConfig: { defaultGodown: null },
+        godownConfig: { defaultGodown: 'Main Location' },
         stockAvailabilityStore,
       },
       draft({
@@ -937,13 +936,8 @@ describe('checkPostingReadiness — I: godown resolution', () => {
     );
     expect(result.ready).toBe(true);
     expect(result.itemGodowns).toEqual([{ itemIndex: 0, godown: 'Main Location' }]);
-    expect(result.itemStock[0]?.resolvedBatch).toBe('Primary Batch');
   });
-  it('auto-selects the single godown with recorded stock even when that recorded quantity is zero, negative, or insufficient', () => {
-    // The recorded amount is exactly the requested quantity minus a bit
-    // more than what's there — insufficient — and there is only one godown
-    // with any record at all. This must still auto-select, not block: stock
-    // shortage is a warning (see stockWarnings), never a godown blocker.
+  it('the configured default godown still resolves correctly even when its recorded quantity is zero, negative, or insufficient — a stock warning, never a godown blocker', () => {
     stockAvailabilityStore.replaceAllForItem('Steel Rods', [
       { batchName: 'Primary Batch', godownName: 'Main Location', quantity: -20, unit: 'Kg' },
     ]);
@@ -952,7 +946,7 @@ describe('checkPostingReadiness — I: godown resolution', () => {
         db: database.db,
         gstConfig: GST_CONFIG,
         itemLedgerMappingStore,
-        godownConfig: { defaultGodown: null },
+        godownConfig: { defaultGodown: 'Main Location' },
         stockAvailabilityStore,
       },
       draft({
@@ -968,7 +962,7 @@ describe('checkPostingReadiness — I: godown resolution', () => {
       expect.objectContaining({ itemIndex: 0, reason: 'insufficient', availableQuantity: -20 }),
     );
   });
-  it('blocks when an item states no godown, no default is configured, and no godown has any recorded stock at all', () => {
+  it('blocks when an item states no godown and no default is configured — regardless of any recorded stock', () => {
     stockAvailabilityStore.replaceAllForItem('Steel Rods', []); // no stock anywhere
     const result = checkPostingReadiness(
       {
@@ -988,6 +982,28 @@ describe('checkPostingReadiness — I: godown resolution', () => {
     expect(result.blockers).toContainEqual(
       expect.objectContaining({ code: 'godown_missing', itemIndex: 0 }),
     );
+  });
+  it('a newly created StockItem (no stock_availability row has ever existed for it) still resolves to the configured default', () => {
+    // Distinct from the "zero stock records" case above only in that this
+    // item has never appeared in stock_availability at all — the resolution
+    // logic makes no distinction, since it never consults that store for
+    // godown selection in the first place.
+    const result = checkPostingReadiness(
+      {
+        db: database.db,
+        gstConfig: GST_CONFIG,
+        itemLedgerMappingStore,
+        godownConfig: { defaultGodown: 'Main Location' },
+        stockAvailabilityStore,
+      },
+      draft({
+        placeOfSupply: 'Delhi',
+        items: [{ itemName: 'Steel Rods', quantity: 1, rate: 500, godown: null }],
+      }),
+      VALID_PHASE5,
+    );
+    expect(result.ready).toBe(true);
+    expect(result.itemGodowns).toEqual([{ itemIndex: 0, godown: 'Main Location' }]);
   });
   it('blocks when the configured default godown itself does not exist in cached masters', () => {
     const result = checkPostingReadiness(

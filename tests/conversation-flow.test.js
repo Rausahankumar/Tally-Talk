@@ -50,6 +50,10 @@ const config = {
     // their own app with no default to test the "must ask" behaviour.
     defaultPlaceOfSupply: 'Delhi',
   },
+  // A default godown is configured for the shared fixture, same reasoning
+  // as gst.defaultPlaceOfSupply above — matches the "Main Location" godown
+  // every draft item in this file's fixtures already expects to resolve to.
+  godown: { defaultGodown: 'Main Location' },
   databasePath: ':memory:',
   tally: { host: '127.0.0.1', port: 9000 },
   llm: {

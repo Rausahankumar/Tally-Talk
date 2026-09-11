@@ -32,11 +32,11 @@ export function createApp(deps) {
       gstConfig: { companyState: deps.companyState, defaultPlaceOfSupply: deps.config.gst.defaultPlaceOfSupply },
       itemLedgerMappingStore: deps.itemLedgerMappingStore,
       companyRevenueLedgerDefaultsStore: deps.companyRevenueLedgerDefaultsStore,
-      // No configured default godown — the existing stock-availability-based
-      // auto-select/ask/fail-closed resolution (postingReadiness.js) handles
-      // every case; this fallback layer stays available to callers that want
-      // it, but this deployment never sources one from .env.
-      godownConfig: { defaultGodown: null },
+      // Sourced from DEFAULT_GODOWN (config/index.js); when an item states no
+      // godown, this is what checkPostingReadiness (postingReadiness.js)
+      // falls back to — resolved against the live Tally Godown cache on every
+      // request, never silently replaced if it turns out not to exist there.
+      godownConfig: { defaultGodown: deps.config.godown.defaultGodown },
       stockAvailabilityStore: deps.stockAvailabilityStore,
       companyName: deps.companyName,
       postingStore: deps.postingStore,

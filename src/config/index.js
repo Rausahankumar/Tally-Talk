@@ -146,6 +146,18 @@ function parseGst(env, problems) {
   }
   return { defaultPlaceOfSupply: rawDefault };
 }
+/**
+ * Unlike `DEFAULT_PLACE_OF_SUPPLY`, there is no static reference list a
+ * godown name can be checked against here — Tally's Godown master is the
+ * only source of truth, and it isn't synced yet at config-load time. This
+ * just captures the configured value as-is; `checkPostingReadiness`
+ * (`gst/postingReadiness.js`) resolves it against the live cache on every
+ * request and blocks with `godown_not_found_in_masters` if it's wrong,
+ * exactly like an explicitly stated godown that doesn't exist.
+ */
+function parseGodown(env) {
+  return { defaultGodown: env.DEFAULT_GODOWN?.trim() || null };
+}
 function parsePort(env, problems) {
   const raw = env.PORT?.trim();
   if (!raw) return 3000;
@@ -175,6 +187,7 @@ export function loadConfig(env = process.env) {
     tally: parseTally(env, problems),
     llm: parseLLM(env, problems),
     gst: parseGst(env, problems),
+    godown: parseGodown(env),
   };
   if (problems.length > 0) throw new ConfigError(problems);
   return config;

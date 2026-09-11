@@ -66,6 +66,7 @@ const config = {
     workspaceId: null,
   },
   gst: { defaultPlaceOfSupply: null },
+  godown: { defaultGodown: null },
 };
 // companyName/companyState are discovered from Tally at startup in the real
 // app (tally/company.js) — passed directly here, the same way server.js does.

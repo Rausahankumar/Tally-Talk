@@ -158,8 +158,11 @@ describe('loadConfig', () => {
       'not a recognised Indian state',
     );
   });
-  it('does not require or read DEFAULT_GODOWN — the existing stock-availability-based auto-select/ask/fail-closed resolution (postingReadiness.js) already covers this', () => {
-    const config = loadConfig(validEnv({ DEFAULT_GODOWN: 'Should be ignored' }));
-    expect(config.godown).toBeUndefined();
+  it('reads DEFAULT_GODOWN — the configured fallback when an item states no godown (postingReadiness.js)', () => {
+    const config = loadConfig(validEnv({ DEFAULT_GODOWN: 'Main Location' }));
+    expect(config.godown.defaultGodown).toBe('Main Location');
+  });
+  it('defaults to no default godown when unset — an item with no stated godown then blocks with godown_missing', () => {
+    expect(loadConfig(validEnv()).godown.defaultGodown).toBeNull();
   });
 });
