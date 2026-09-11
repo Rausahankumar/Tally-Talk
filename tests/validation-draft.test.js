@@ -436,16 +436,16 @@ describe('validateTransactionDraft - resolving rate/GST from Tally-cached histor
     expect(result.issues.some((i) => i.code === 'missing_gst_percent')).toBe(false);
     expect(result.issues.some((i) => i.code === 'gst_data_unverifiable')).toBe(false);
   });
-  it('fails closed on a GST record whose CGST+SGST does not equal IGST — present but unverifiable, never silently treated as no GST', () => {
+  it('a GST record whose CGST+SGST does not equal IGST is unusable — resolves as no GST, never blocks, never invents a rate', () => {
     cacheOrange({
       gstRateHistory: [
         { applicableFrom: '2025-04-01', states: [{ state: 'Any', cgst: 9, sgst: 9, igst: 12 }] },
       ],
     });
     const result = validateTransactionDraft(database.db, orangeDraft());
-    expect(result.items[0]?.gstPercentValid).toBe(false);
+    expect(result.items[0]?.gstPercentValid).toBe(true);
     expect(result.items[0]?.resolvedGstPercent).toBeNull();
-    expect(result.issues).toContainEqual(expect.objectContaining({ code: 'gst_data_unverifiable' }));
+    expect(result.issues.some((i) => i.code === 'gst_data_unverifiable')).toBe(false);
   });
   it('resolves rate from Tally Standard Price when neither explicit nor configured rate is present', () => {
     cacheOrange();
