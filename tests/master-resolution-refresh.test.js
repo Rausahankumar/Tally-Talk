@@ -275,6 +275,123 @@ describe('resolveDraftWithRefresh — stale cached selling price on an exact-mat
     expect(result.validation.items[0].rateValid).toBe(false);
   });
 });
+describe('resolveDraftWithRefresh — stale cached GST rate on an exact-matched StockItem (the "Samsung" incident)', () => {
+  // An explicit, valid rate on every draft here isolates GST resolution —
+  // otherwise a missing_rate issue (already covered above) would also
+  // trigger a refresh, making these assertions ambiguous about *why*.
+  function gstDraft(overrides = {}) {
+    return draft({
+      partyName: 'Itworks',
+      items: [{ itemName: 'Samsung', quantity: 2, rate: 55000, godown: null, gstPercent: null }],
+      gstPercent: null,
+      ...overrides,
+    });
+  }
+  beforeEach(() => {
+    cache.replaceAll('Ledger', [
+      { NAME: 'CGST', PARENT: 'Duties & Taxes', TAXTYPE: 'GST', GSTDUTYHEAD: 'CGST' },
+      { NAME: 'SGST', PARENT: 'Duties & Taxes', TAXTYPE: 'GST', GSTDUTYHEAD: 'SGST/UTGST' },
+      { NAME: 'Sales', PARENT: 'Sales Accounts' },
+      { NAME: 'Itworks', PARENT: 'Sundry Creditors' },
+    ]);
+    itemLedgerMappingStore.setMapping({ stockItemName: 'Samsung', salesLedger: 'Sales', purchaseLedger: 'Purchase' }); // no gstPercent override configured
+  });
+  it('cached GST rate already usable, exact name match — resolves immediately, no sync at all', async () => {
+    cache.replaceAll('StockItem', [
+      {
+        NAME: 'Samsung',
+        PARENT: '',
+        BASEUNITS: 'PCS',
+        gstRateHistory: [{ applicableFrom: '2025-04-01', states: [{ state: 'Any', cgst: 9, sgst: 9, igst: 18 }] }],
+      },
+    ]);
+    const result = await resolveDraftWithRefresh(baseDeps(neverCalledSyncCoordinator()), gstDraft());
+    expect(result.refreshAttempted).toBe(false);
+    expect(result.validation.items[0]).toMatchObject({ gstPercentValid: true, resolvedGstPercent: 18 });
+  });
+  it('cached GST entry has no usable percentages (real "Samsung" shape) — refresh brings in the real rate Tally now has', async () => {
+    cache.replaceAll('StockItem', [
+      {
+        NAME: 'Samsung',
+        PARENT: '',
+        BASEUNITS: 'PCS',
+        gstRateHistory: [{ applicableFrom: '2025-04-01', states: [{ state: 'Any', cgst: null, sgst: null, igst: null }] }],
+      },
+    ]);
+    const syncCoordinator = scriptedSyncCoordinator({
+      succeeds: true,
+      applyFn: () =>
+        cache.replaceAll('StockItem', [
+          {
+            NAME: 'Samsung',
+            PARENT: '',
+            BASEUNITS: 'PCS',
+            gstRateHistory: [
+              { applicableFrom: '2025-04-01', states: [{ state: 'Any', cgst: null, sgst: null, igst: null }] },
+              { applicableFrom: '2026-09-01', states: [{ state: 'Any', cgst: 9, sgst: 9, igst: 18 }] },
+            ],
+          },
+        ]),
+    });
+    const result = await resolveDraftWithRefresh(baseDeps(syncCoordinator), gstDraft({ date: '2026-09-01' }));
+    expect(syncCoordinator.callCount).toBe(1);
+    expect(result.refreshAttempted).toBe(true);
+    expect(result.validation.items[0]).toMatchObject({ gstPercentValid: true, resolvedGstPercent: 18 });
+  });
+  it('still unresolved after refresh — blocks, never guesses a GST rate', async () => {
+    cache.replaceAll('StockItem', [{ NAME: 'Samsung', PARENT: '', BASEUNITS: 'PCS' }]); // no gstRateHistory at all
+    const syncCoordinator = scriptedSyncCoordinator({ succeeds: true }); // nothing changes
+    const result = await resolveDraftWithRefresh(baseDeps(syncCoordinator), gstDraft());
+    expect(syncCoordinator.callCount).toBe(1);
+    expect(result.refreshAttempted).toBe(true);
+    expect(result.validation.items[0]).toMatchObject({ gstPercentValid: false, resolvedGstPercent: null });
+    expect(result.validation.issues.some((i) => i.code === 'missing_gst_percent')).toBe(true);
+  });
+  it('user explicitly states a GST percent — used as-is, no sync', async () => {
+    cache.replaceAll('StockItem', [{ NAME: 'Samsung', PARENT: '', BASEUNITS: 'PCS' }]); // no gstRateHistory at all
+    const result = await resolveDraftWithRefresh(
+      baseDeps(neverCalledSyncCoordinator()),
+      gstDraft({ items: [{ itemName: 'Samsung', quantity: 2, rate: 55000, godown: null, gstPercent: 18 }] }),
+    );
+    expect(result.refreshAttempted).toBe(false);
+    expect(result.validation.items[0]).toMatchObject({ gstPercentValid: true, resolvedGstPercent: 18 });
+  });
+  it('user states an invalid GST percent — never triggers a sync, since no sync could fix bad user input', async () => {
+    cache.replaceAll('StockItem', [{ NAME: 'Samsung', PARENT: '', BASEUNITS: 'PCS' }]);
+    const result = await resolveDraftWithRefresh(
+      baseDeps(neverCalledSyncCoordinator()),
+      gstDraft({ items: [{ itemName: 'Samsung', quantity: 2, rate: 55000, godown: null, gstPercent: 999 }] }),
+    );
+    expect(result.refreshAttempted).toBe(false);
+    expect(result.validation.items[0].gstPercentValid).toBe(false);
+    expect(result.validation.issues.some((i) => i.code === 'invalid_gst_percent')).toBe(true);
+  });
+  it('applies on a purchase voucher too — Tally GST history is consulted for every voucher type, unlike rate', async () => {
+    cache.replaceAll('StockItem', [{ NAME: 'Samsung', PARENT: '', BASEUNITS: 'PCS' }]);
+    cache.replaceAll('Ledger', [
+      { NAME: 'CGST', PARENT: 'Duties & Taxes', TAXTYPE: 'GST', GSTDUTYHEAD: 'CGST' },
+      { NAME: 'SGST', PARENT: 'Duties & Taxes', TAXTYPE: 'GST', GSTDUTYHEAD: 'SGST/UTGST' },
+      { NAME: 'Purchase', PARENT: 'Purchase Accounts' },
+      { NAME: 'Itworks', PARENT: 'Sundry Debtors' }, // purchase matches against Sundry Debtors
+    ]);
+    const syncCoordinator = scriptedSyncCoordinator({
+      succeeds: true,
+      applyFn: () =>
+        cache.replaceAll('StockItem', [
+          {
+            NAME: 'Samsung',
+            PARENT: '',
+            BASEUNITS: 'PCS',
+            gstRateHistory: [{ applicableFrom: '2025-04-01', states: [{ state: 'Any', cgst: 9, sgst: 9, igst: 18 }] }],
+          },
+        ]),
+    });
+    const result = await resolveDraftWithRefresh(baseDeps(syncCoordinator), gstDraft({ voucherType: 'purchase' }));
+    expect(syncCoordinator.callCount).toBe(1);
+    expect(result.refreshAttempted).toBe(true);
+    expect(result.validation.items[0]).toMatchObject({ gstPercentValid: true, resolvedGstPercent: 18 });
+  });
+});
 describe('resolveReadinessWithRefresh — the confirm-time / pre-write re-check path', () => {
   function fullDeps(syncCoordinator, extra = {}) {
     return { ...baseDeps(syncCoordinator), companyName: 'Test Co', ...extra };

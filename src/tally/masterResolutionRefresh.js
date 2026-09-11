@@ -38,6 +38,13 @@
  * needs no new sync path — only a `missing_rate` (never `invalid_rate`, which
  * is user error no refresh can fix) on a sales item that otherwise matched
  * exactly is treated as refresh-worthy too (see `hasRefreshWorthyMissingRate`).
+ *
+ * The same gap exists for `gstRateHistory` (real incident — "Samsung": a
+ * cached GST entry with no usable percentages, superseded in Tally by a
+ * real, effective-dated rate the cache hadn't picked up yet). Unlike rate,
+ * Tally's GST history is consulted for both sales and purchase (see
+ * `resolveLineItemGstPercent` — no voucherType gate), so
+ * `hasRefreshWorthyMissingGstPercent` applies to every voucher type.
  */
 import { checkPostingReadiness } from '../gst/postingReadiness.js';
 import { validateTransactionDraft } from '../validation/validateDraft.js';
@@ -73,10 +80,25 @@ function hasRefreshWorthyMissingRate(validation, voucherType) {
     return validation.items[issue.itemIndex]?.stockItemMatch.status === 'exact';
   });
 }
+/**
+ * A `missing_gst_percent` issue on an exact-matched item means the master
+ * exists but its GST rate couldn't be resolved — mirrors
+ * `hasRefreshWorthyMissingRate`, but never excludes purchase vouchers:
+ * `resolveLineItemGstPercent` consults Tally's `gstRateHistory` for every
+ * voucher type. Deliberately excludes `invalid_gst_percent` — a bad
+ * user-stated GST percent is never fixed by refreshing Tally.
+ */
+function hasRefreshWorthyMissingGstPercent(validation) {
+  return validation.issues.some((issue) => {
+    if (issue.code !== 'missing_gst_percent') return false;
+    return validation.items[issue.itemIndex]?.stockItemMatch.status === 'exact';
+  });
+}
 function validationNeedsRefresh(validation, voucherType) {
   if (validation.partyMatch !== null && validation.partyMatch.status !== 'exact') return true;
   if (validation.items.some((item) => item.stockItemMatch.status !== 'exact')) return true;
-  return hasRefreshWorthyMissingRate(validation, voucherType);
+  if (hasRefreshWorthyMissingRate(validation, voucherType)) return true;
+  return hasRefreshWorthyMissingGstPercent(validation);
 }
 function readinessNeedsRefresh(readiness) {
   if (readiness === null) return false;
