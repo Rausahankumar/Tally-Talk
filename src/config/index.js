@@ -58,6 +58,26 @@ function parseWebhookSecret(env, problems) {
   }
   return secret;
 }
+/**
+ * Optional. Only present on a deployment with a stable public HTTPS URL
+ * (a cloud/client machine) — never required for local development, where
+ * the webhook has historically been registered by hand against whatever
+ * tunnel URL is active. When set, `server.js` uses it at startup to
+ * register/verify the Telegram webhook automatically
+ * (`channels/telegram/webhookRegistration.js`); when unset, that step is
+ * skipped entirely and nothing about existing local-dev behaviour changes.
+ */
+function parsePublicWebhookUrl(env, problems) {
+  const raw = env.PUBLIC_WEBHOOK_URL?.trim() || null;
+  if (raw === null) return null;
+  if (!/^https:\/\//i.test(raw)) {
+    problems.push(`PUBLIC_WEBHOOK_URL must start with https:// (got "${raw}")`);
+  }
+  if (raw.endsWith('/')) {
+    problems.push(`PUBLIC_WEBHOOK_URL must not end with a trailing slash (got "${raw}")`);
+  }
+  return raw;
+}
 function parseAllowedUserIds(env, problems) {
   const raw = readRequired(env, 'TELEGRAM_ALLOWED_USER_IDS', problems);
   if (raw === null) return new Set();
@@ -170,6 +190,7 @@ export function loadConfig(env = process.env) {
       botToken: parseBotToken(env, problems),
       webhookSecret: parseWebhookSecret(env, problems),
       allowedUserIds: parseAllowedUserIds(env, problems),
+      publicWebhookUrl: parsePublicWebhookUrl(env, problems),
     },
     databasePath: parseDatabasePath(env, problems),
     tally: parseTally(env, problems),

@@ -162,4 +162,21 @@ describe('loadConfig', () => {
     const config = loadConfig(validEnv({ DEFAULT_GODOWN: 'Should be ignored' }));
     expect(config.godown).toBeUndefined();
   });
+  it('defaults to no PUBLIC_WEBHOOK_URL when unset — local dev keeps registering the webhook by hand', () => {
+    expect(loadConfig(validEnv()).telegram.publicWebhookUrl).toBeNull();
+  });
+  it('accepts a valid PUBLIC_WEBHOOK_URL', () => {
+    const config = loadConfig(validEnv({ PUBLIC_WEBHOOK_URL: 'https://tallytalk.example.com' }));
+    expect(config.telegram.publicWebhookUrl).toBe('https://tallytalk.example.com');
+  });
+  it('rejects a PUBLIC_WEBHOOK_URL that is not https://', () => {
+    expect(
+      problemsFrom(validEnv({ PUBLIC_WEBHOOK_URL: 'http://tallytalk.example.com' })).join('\n'),
+    ).toContain('must start with https://');
+  });
+  it('rejects a PUBLIC_WEBHOOK_URL with a trailing slash', () => {
+    expect(
+      problemsFrom(validEnv({ PUBLIC_WEBHOOK_URL: 'https://tallytalk.example.com/' })).join('\n'),
+    ).toContain('must not end with a trailing slash');
+  });
 });
