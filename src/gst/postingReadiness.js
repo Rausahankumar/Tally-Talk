@@ -316,9 +316,15 @@ export function checkPostingReadiness(deps, draft, phase5Validation) {
   });
   // Godown resolution is independent of ledger/GST resolution above: it comes
   // from the draft's own per-item field plus the configured default, never
-  // from Phase 5's stock item matching. Each item is resolved on its own —
-  // items may share a godown or each name a different one; neither is an
-  // error (per the real captured Tally evidence this mirrors).
+  // from Phase 5's stock item matching, and never from stock availability —
+  // stock data answers "how much/which batch", never "which godown". Each
+  // item is resolved on its own — items may share a godown or each name a
+  // different one; neither is an error (per the real captured Tally evidence
+  // this mirrors). Precedence is exactly two tiers, no guessing between them:
+  // an explicitly stated godown always wins (resolved against real Tally
+  // masters, never silently replaced by the default even if it doesn't
+  // exist); otherwise the configured default applies unconditionally — an
+  // item with no stock history yet is not a reason to withhold it.
   //
   // Stock resolution runs immediately after, for the same item, only once a
   // godown is actually resolved: batch and closing quantity are looked up
@@ -331,59 +337,24 @@ export function checkPostingReadiness(deps, draft, phase5Validation) {
   const itemGodowns = [];
   const itemStock = [];
   draft.items.forEach((item, itemIndex) => {
-    // Needed up front now: auto-selecting a godown from stock data requires
-    // the resolved stock item name and quantity before a godown is even
-    // known, not just after (as the rest of this block still does below).
     const resolvedItemNameForGodown =
       phase5Validation.items[itemIndex]?.stockItemMatch.matchedName ?? null;
     const requestedQuantityForGodown = item.quantity;
-    let effectiveGodown = item.godown ?? deps.godownConfig.defaultGodown;
+    const effectiveGodown = item.godown ?? deps.godownConfig.defaultGodown;
     if (effectiveGodown === null) {
-      // No godown stated and none configured as default: try to resolve one
-      // from real stock data instead of asking immediately. Auto-select only
-      // when exactly one godown has any recorded stock for this item at all
-      // — regardless of whether that amount is enough (insufficient/zero/
-      // negative stock is a warning elsewhere, never a reason to exclude a
-      // godown here). More than one recorded godown is a genuine choice
-      // nothing here may make silently; zero is the same hard block as
-      // before, just with a clearer reason: there is truly no data to decide
-      // from, not that what's recorded happens to be too little.
-      const candidates =
-        resolvedItemNameForGodown !== null && requestedQuantityForGodown !== null
-          ? deps.stockAvailabilityStore.getAllGodownsWithRecordedStock(resolvedItemNameForGodown)
-          : [];
-      if (candidates.length === 1) {
-        effectiveGodown = candidates[0].godown;
-      } else if (candidates.length > 1) {
-        blockers.push({
-          code: 'godown_selection_required',
-          message: `Multiple godowns have recorded stock of "${item.itemName}"; please choose one: ${candidates.map((c) => c.godown).join(', ')}.`,
-          itemIndex,
-          candidates: candidates.map((c) => c.godown),
-        });
-        itemGodowns.push({ itemIndex, godown: null });
-        itemStock.push({
-          itemIndex,
-          resolvedBatch: null,
-          availableQuantity: null,
-          alternativeGodowns: [],
-        });
-        return;
-      } else {
-        blockers.push({
-          code: 'godown_missing',
-          message: `No godown was stated for "${item.itemName}", no default godown is configured, and no godown has any recorded stock for it.`,
-          itemIndex,
-        });
-        itemGodowns.push({ itemIndex, godown: null });
-        itemStock.push({
-          itemIndex,
-          resolvedBatch: null,
-          availableQuantity: null,
-          alternativeGodowns: [],
-        });
-        return;
-      }
+      blockers.push({
+        code: 'godown_missing',
+        message: `No godown was stated for "${item.itemName}", and no default godown is configured.`,
+        itemIndex,
+      });
+      itemGodowns.push({ itemIndex, godown: null });
+      itemStock.push({
+        itemIndex,
+        resolvedBatch: null,
+        availableQuantity: null,
+        alternativeGodowns: [],
+      });
+      return;
     }
     if (!godownExistsExact(deps.db, effectiveGodown)) {
       blockers.push({
