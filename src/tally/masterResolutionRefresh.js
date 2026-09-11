@@ -29,6 +29,22 @@
  * "couldn't verify with Tally right now" message instead of silently
  * proceeding (or silently reporting "not found", which would be a different,
  * false claim — it might well exist, we just couldn't check).
+ *
+ * The same staleness can hit a *field* inside an otherwise exact-matched
+ * master, not just the name itself: a StockItem can resolve exactly while
+ * its cached `standardPriceHistory` is empty because the Selling Price was
+ * only just set in Tally (real incident — "Test Item"). `standardPriceHistory`
+ * is refreshed by the same full StockItem sync that refreshes names, so this
+ * needs no new sync path — only a `missing_rate` (never `invalid_rate`, which
+ * is user error no refresh can fix) on a sales item that otherwise matched
+ * exactly is treated as refresh-worthy too (see `hasRefreshWorthyMissingRate`).
+ *
+ * The same gap exists for `gstRateHistory` (real incident — "Samsung": a
+ * cached GST entry with no usable percentages, superseded in Tally by a
+ * real, effective-dated rate the cache hadn't picked up yet). Unlike rate,
+ * Tally's GST history is consulted for both sales and purchase (see
+ * `resolveLineItemGstPercent` — no voucherType gate), so
+ * `hasRefreshWorthyMissingGstPercent` applies to every voucher type.
  */
 import { checkPostingReadiness } from '../gst/postingReadiness.js';
 import { validateTransactionDraft } from '../validation/validateDraft.js';
@@ -47,9 +63,42 @@ const REFRESH_WORTHY_BLOCKER_CODES = new Set([
   'company_default_ledger_not_found',
   'gst_ledger_not_found_in_masters',
 ]);
-function validationNeedsRefresh(validation) {
+/**
+ * A `missing_rate` issue on a sales item whose name matched exactly means
+ * the master exists but its selling price couldn't be resolved — the same
+ * shape of staleness as a non-exact name match (see module doc), since
+ * `standardPriceHistory` is refreshed by the same full StockItem sync that
+ * refreshes names. Deliberately excludes `invalid_rate` (the user typed a
+ * bad rate — no amount of syncing Tally fixes that) and purchase vouchers
+ * (`resolveLineItemRate` never consults Tally's standard rate for
+ * purchases, so refreshing cannot possibly help there either).
+ */
+function hasRefreshWorthyMissingRate(validation, voucherType) {
+  if (voucherType === 'purchase') return false;
+  return validation.issues.some((issue) => {
+    if (issue.code !== 'missing_rate') return false;
+    return validation.items[issue.itemIndex]?.stockItemMatch.status === 'exact';
+  });
+}
+/**
+ * A `missing_gst_percent` issue on an exact-matched item means the master
+ * exists but its GST rate couldn't be resolved — mirrors
+ * `hasRefreshWorthyMissingRate`, but never excludes purchase vouchers:
+ * `resolveLineItemGstPercent` consults Tally's `gstRateHistory` for every
+ * voucher type. Deliberately excludes `invalid_gst_percent` — a bad
+ * user-stated GST percent is never fixed by refreshing Tally.
+ */
+function hasRefreshWorthyMissingGstPercent(validation) {
+  return validation.issues.some((issue) => {
+    if (issue.code !== 'missing_gst_percent') return false;
+    return validation.items[issue.itemIndex]?.stockItemMatch.status === 'exact';
+  });
+}
+function validationNeedsRefresh(validation, voucherType) {
   if (validation.partyMatch !== null && validation.partyMatch.status !== 'exact') return true;
-  return validation.items.some((item) => item.stockItemMatch.status !== 'exact');
+  if (validation.items.some((item) => item.stockItemMatch.status !== 'exact')) return true;
+  if (hasRefreshWorthyMissingRate(validation, voucherType)) return true;
+  return hasRefreshWorthyMissingGstPercent(validation);
 }
 function readinessNeedsRefresh(readiness) {
   if (readiness === null) return false;
@@ -73,7 +122,7 @@ export async function resolveDraftWithRefresh(deps, draft) {
     return { validation, readiness };
   };
   const first = runOnce();
-  if (!validationNeedsRefresh(first.validation) && !readinessNeedsRefresh(first.readiness)) {
+  if (!validationNeedsRefresh(first.validation, draft.voucherType) && !readinessNeedsRefresh(first.readiness)) {
     return { ...first, refreshAttempted: false, refreshFailed: false };
   }
   const syncOutcome = await deps.syncCoordinator.ensureFreshSync();
