@@ -46,24 +46,36 @@ function latestApplicable(history, dateField, transactionDateIso) {
 }
 const GST_RATE_EPSILON = 1e-9;
 /**
- * The Tally-derived GST% for one stock item, as of the transaction date, or
- * `null` if unavailable or unverifiable. Only the "Any" state-wise entry is
- * used — real captured data never showed a state-specific override, and
- * picking a different one without evidence would be a guess. CGST + SGST
- * must equal IGST before the record is trusted at all; a mismatch means the
- * record is not used, not that a wrong number is used anyway.
+ * The Tally-derived GST% for one stock item, as of the transaction date.
+ * Distinguishes two very different reasons nothing resolves, per GST being
+ * optional (not mandatory) — Tally is the source of truth for both:
+ *
+ *  - `{status:'absent'}` — Tally genuinely has no GST classification for
+ *    this item (no `GSTDETAILS.LIST` history at all, or no entry effective
+ *    as of the transaction date). A valid, real state: the caller may treat
+ *    this item as having no GST, never a blocking error.
+ *  - `{status:'malformed'}` — an entry exists as of the transaction date but
+ *    cannot be trusted: no "Any" state-wise breakdown, a null CGST/SGST/IGST
+ *    component, CGST+SGST not equal to IGST, or a resulting rate outside the
+ *    documented slabs. Present-but-suspicious data is never silently treated
+ *    as "no GST" — the caller must fail closed.
+ *  - `{status:'resolved', percent}` — a verified, trustworthy rate.
+ *
+ * Only the "Any" state-wise entry is used — real captured data never showed
+ * a state-specific override, and picking a different one without evidence
+ * would be a guess.
  */
 function resolveTallyGstPercent(db, stockItemName, transactionDateIso) {
   const cached = findCachedStockItem(db, stockItemName);
-  if (cached === null) return null;
+  if (cached === null) return { status: 'absent' };
   const entry = latestApplicable(cached.gstRateHistory, 'applicableFrom', transactionDateIso);
-  if (entry === null) return null;
+  if (entry === null) return { status: 'absent' };
   const anyState = entry.states?.find((s) => s.state === 'Any');
-  if (anyState === undefined) return null;
+  if (anyState === undefined) return { status: 'malformed' };
   const { cgst, sgst, igst } = anyState;
-  if (cgst === null || sgst === null || igst === null) return null;
-  if (Math.abs(cgst + sgst - igst) > GST_RATE_EPSILON) return null;
-  return isValidGstPercent(igst) ? igst : null;
+  if (cgst === null || sgst === null || igst === null) return { status: 'malformed' };
+  if (Math.abs(cgst + sgst - igst) > GST_RATE_EPSILON) return { status: 'malformed' };
+  return isValidGstPercent(igst) ? { status: 'resolved', percent: igst } : { status: 'malformed' };
 }
 /**
  * The Tally-derived standard selling rate for one stock item, as of the
@@ -157,9 +169,15 @@ function resolveVoucherLevelGstPercent(draft, issues) {
  *     precedence — see `resolveLineItemRate`, where Tally's Standard Price
  *     is the less-trusted source).
  *  4. The trusted per-item configuration (`itemLedgerMappingStore.gstPercent`).
- *  5. Unresolved — this item alone is reported as `missing_gst_percent`,
- *     never a whole-draft failure that also blocks a sibling item that
- *     resolved fine (see DECISIONS.md / the per-line-GST architecture note).
+ *  5. GST is optional, not mandatory (Tally is the source of truth): if
+ *     nothing above resolved AND Tally's own data was cleanly absent (never
+ *     malformed — see `resolveTallyGstPercent`), this item genuinely has no
+ *     GST. That is a valid, resolved state (`resolvedGstPercent: null`), not
+ *     an issue — never a blocking `missing_gst_percent`.
+ *  6. If Tally's data was present but unverifiable at step 3, and no later
+ *     tier resolved it either, fail closed: `gst_data_unverifiable`. Unlike
+ *     absence, this is real data that could not be trusted, so it is never
+ *     silently treated as "no GST".
  *
  * Items are deliberately never forced to agree with each other: two items
  * with two different real Tally GST rates (e.g. 18% and 5%) each resolve
@@ -198,10 +216,14 @@ function resolveLineItemGstPercent(
   if (voucherGstPercent.value !== null) {
     return { gstPercentValid: true, resolvedGstPercent: voucherGstPercent.value };
   }
+  let tallyDataMalformed = false;
   if (stockItemMatch.matchedName !== null) {
-    const tallyRate = resolveTallyGstPercent(db, stockItemMatch.matchedName, transactionDateIso);
-    if (tallyRate !== null) {
-      return { gstPercentValid: true, resolvedGstPercent: tallyRate };
+    const tallyResult = resolveTallyGstPercent(db, stockItemMatch.matchedName, transactionDateIso);
+    if (tallyResult.status === 'resolved') {
+      return { gstPercentValid: true, resolvedGstPercent: tallyResult.percent };
+    }
+    if (tallyResult.status === 'malformed') {
+      tallyDataMalformed = true;
     }
   }
   if (itemLedgerMappingStore !== null && stockItemMatch.matchedName !== null) {
@@ -211,8 +233,17 @@ function resolveLineItemGstPercent(
       return { gstPercentValid: true, resolvedGstPercent: mappedGstPercent };
     }
   }
-  issues.push({ code: 'missing_gst_percent', message: 'No GST rate was stated.', itemIndex: index });
-  return { gstPercentValid: false, resolvedGstPercent: null };
+  if (tallyDataMalformed) {
+    issues.push({
+      code: 'gst_data_unverifiable',
+      message: `GST data in TallyPrime for "${stockItemMatch.matchedName}" could not be verified (missing, inconsistent, or unrecognised CGST/SGST/IGST).`,
+      itemIndex: index,
+    });
+    return { gstPercentValid: false, resolvedGstPercent: null };
+  }
+  // Nothing was stated and Tally genuinely has no GST classification for
+  // this item — a valid no-GST resolution, not an error.
+  return { gstPercentValid: true, resolvedGstPercent: null };
 }
 /**
  * A date is only ever checked when the user (via the LLM) actually stated

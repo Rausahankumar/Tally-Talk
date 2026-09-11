@@ -72,6 +72,30 @@ describe('buildTaxLedgerAllocationsByRateBucket', () => {
     const allocations = buildTaxLedgerAllocationsByRateBucket(lineItems, INTERSTATE);
     expect(allocations).toEqual([{ ledgerName: 'IGST', amount: 0, ratePercent: 0 }]);
   });
+  it('a null-GST item (genuinely no GST, not 0%) contributes no bucket at all — never treated as a 0% entry', () => {
+    const lineItems = [{ amount: 1000, gstPercent: null }];
+    const allocations = buildTaxLedgerAllocationsByRateBucket(lineItems, INTERSTATE);
+    expect(allocations).toEqual([]);
+  });
+  it('a no-GST-only voucher never touches gstTreatment at all — safe even when it is null', () => {
+    const lineItems = [
+      { amount: 1000, gstPercent: null },
+      { amount: 2000, gstPercent: null },
+    ];
+    const allocations = buildTaxLedgerAllocationsByRateBucket(lineItems, null);
+    expect(allocations).toEqual([]);
+  });
+  it('mixed GST + no-GST items: GST applies only to the item that resolved one', () => {
+    const lineItems = [
+      { amount: 5000, gstPercent: 18 }, // Steel Rods, real Tally GST
+      { amount: 625, gstPercent: null }, // genuinely no GST
+    ];
+    const allocations = buildTaxLedgerAllocationsByRateBucket(lineItems, INTRASTATE);
+    expect(allocations).toEqual([
+      { ledgerName: 'CGST', amount: 450, ratePercent: 18 },
+      { ledgerName: 'SGST', amount: 450, ratePercent: 18 },
+    ]);
+  });
   it('three distinct rates produce three independent buckets', () => {
     const lineItems = [
       { amount: 1000, gstPercent: 12 },

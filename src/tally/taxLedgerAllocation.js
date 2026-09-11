@@ -31,25 +31,30 @@ function roundMoney(value) {
 }
 /**
  * @param lineItems Each must carry `.amount` (taxable amount) and
- *   `.gstPercent` (that item's own resolved GST rate — never null; callers
- *   are expected to have already blocked any item whose GST rate could not
- *   be resolved, exactly as they already do for a missing ledger/godown/batch).
+ *   `.gstPercent` — that item's own resolved GST rate, or `null` for an
+ *   item that genuinely has no GST (a valid state, not an error — GST is
+ *   optional; see validateDraft.js/postingReadiness.js). A `null`-GST item
+ *   contributes no bucket and no tax allocation at all.
  * @param gstTreatment `{ ledgers: [{ ledgerName, share }] }` — CGST+SGST
  *   (0.5/0.5) or IGST (1) — resolved once per voucher exactly as before;
- *   only the per-bucket amount is new here, never which ledgers apply.
+ *   only the per-bucket amount is new here, never which ledgers apply. May
+ *   be `null` when no item in `lineItems` carries a GST percent at all —
+ *   never dereferenced in that case, since there is nothing to bucket.
  * @returns `{ ledgerName, amount, ratePercent }[]`, one entry per (rate
  *   bucket × duty-head ledger), sorted by rate ascending for deterministic
  *   output regardless of item order in the draft. `ratePercent` is carried
  *   through for tests/debugging only — postingXml.js reads only
- *   `ledgerName`/`amount`, unchanged.
+ *   `ledgerName`/`amount`, unchanged. `[]` when no item needs GST.
  */
 export function buildTaxLedgerAllocationsByRateBucket(lineItems, gstTreatment) {
   const bucketsByRate = new Map();
   for (const item of lineItems) {
+    if (item.gstPercent === null) continue; // no GST for this item — nothing to bucket
     const bucket = bucketsByRate.get(item.gstPercent) ?? { ratePercent: item.gstPercent, taxableAmount: 0 };
     bucket.taxableAmount += item.amount;
     bucketsByRate.set(item.gstPercent, bucket);
   }
+  if (bucketsByRate.size === 0) return [];
   const sortedBuckets = [...bucketsByRate.values()].sort((a, b) => a.ratePercent - b.ratePercent);
   const allocations = [];
   for (const bucket of sortedBuckets) {

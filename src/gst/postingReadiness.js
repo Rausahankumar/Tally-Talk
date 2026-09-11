@@ -168,83 +168,94 @@ export function checkPostingReadiness(deps, draft, phase5Validation) {
       ],
     };
   }
-  const companyState = deps.gstConfig.companyState ?? '';
-  if (companyState.trim() === '') {
-    blockers.push({
-      code: 'company_state_not_configured',
-      message: 'The Tally company has no state on record (Company.STATENAME is empty).',
-    });
-  } else if (!isRecognizedState(companyState)) {
-    blockers.push({
-      code: 'company_state_unrecognized',
-      message: `"${companyState}" (from the Tally company record) is not a recognised state or union territory.`,
-    });
-  }
-  // Precedence: explicit statement, then the resolved party ledger's own
-  // registered state (only when it's a recognised state — an unrecognised or
-  // absent value is treated as unavailable, never blocked on, since the user
-  // never stated this one themselves), then the configured default. Recorded
-  // in `placeOfSupplySource` so callers (the preview) can tell the user
-  // exactly where this came from — critical for the party-derived case,
-  // which can genuinely be wrong (DECISIONS.md #28).
+  // GST is optional, not mandatory (Tally is the source of truth — see
+  // validateDraft.js's per-item resolution). Place of Supply, Company State,
+  // and GST duty ledgers exist only to classify and post GST itself — when
+  // no line item resolved a GST percent at all, none of that machinery is
+  // needed, and requiring it would block an otherwise-valid no-GST voucher
+  // for a reason that has nothing to do with what's actually being sold.
+  // When at least one item does carry GST, every requirement below applies
+  // exactly as before, unchanged.
+  const anyItemNeedsGst = phase5Validation.items.some((item) => item.resolvedGstPercent !== null);
   let effectivePlaceOfSupply = draft.placeOfSupply;
   let placeOfSupplySource = 'explicit';
-  if (effectivePlaceOfSupply === null) {
-    const partyState = resolvePartyState(deps.db, phase5Validation.partyMatch?.matchedName ?? null);
-    if (partyState !== null && isRecognizedState(partyState)) {
-      effectivePlaceOfSupply = partyState;
-      placeOfSupplySource = 'party';
-    } else {
-      effectivePlaceOfSupply = deps.gstConfig.defaultPlaceOfSupply;
-      placeOfSupplySource = 'default';
-    }
-  }
-  if (effectivePlaceOfSupply === null) {
-    blockers.push({
-      code: 'place_of_supply_missing',
-      message: 'No Place of Supply was stated, and no default is configured.',
-    });
-  } else if (!isRecognizedState(effectivePlaceOfSupply)) {
-    blockers.push({
-      code: 'place_of_supply_unrecognized',
-      message: `"${effectivePlaceOfSupply}" is not a recognised state or union territory.`,
-    });
-  }
   let gstTreatment = null;
-  if (
-    effectivePlaceOfSupply !== null &&
-    isRecognizedState(effectivePlaceOfSupply) &&
-    companyState.trim() !== '' &&
-    isRecognizedState(companyState)
-  ) {
-    // Resolved fresh from the cache every time, never from static config —
-    // see gstLedgerResolution.js. A ledger name that fails to resolve (not
-    // found, or ambiguous) comes back as `null` and is caught below, exactly
-    // like the old ledgerExistsExact check, just for a different reason.
-    const resolved = resolveGstLedgers(deps.db);
-    gstTreatment = determineGstTreatment(companyState, effectivePlaceOfSupply, {
-      cgstLedger: resolved.cgst.ledgerName,
-      sgstLedger: resolved.sgst.ledgerName,
-      igstLedger: resolved.igst.ledgerName,
-    });
-    const relevantResolutions =
-      gstTreatment.type === 'intrastate'
-        ? [
-            [GST_DUTY_HEADS.cgst, resolved.cgst],
-            [GST_DUTY_HEADS.sgst, resolved.sgst],
-          ]
-        : [[GST_DUTY_HEADS.igst, resolved.igst]];
-    for (const [dutyHead, resolution] of relevantResolutions) {
-      if (resolution.status === 'not_found') {
-        blockers.push({
-          code: 'gst_ledger_not_found_in_masters',
-          message: `No ledger classified as ${dutyHead} (TAXTYPE=GST) was found in TallyPrime.`,
-        });
-      } else if (resolution.status === 'ambiguous') {
-        blockers.push({
-          code: 'gst_ledger_ambiguous',
-          message: `Multiple ledgers are classified as ${dutyHead}; the correct one cannot be determined automatically.`,
-        });
+  if (anyItemNeedsGst) {
+    const companyState = deps.gstConfig.companyState ?? '';
+    if (companyState.trim() === '') {
+      blockers.push({
+        code: 'company_state_not_configured',
+        message: 'The Tally company has no state on record (Company.STATENAME is empty).',
+      });
+    } else if (!isRecognizedState(companyState)) {
+      blockers.push({
+        code: 'company_state_unrecognized',
+        message: `"${companyState}" (from the Tally company record) is not a recognised state or union territory.`,
+      });
+    }
+    // Precedence: explicit statement, then the resolved party ledger's own
+    // registered state (only when it's a recognised state — an unrecognised
+    // or absent value is treated as unavailable, never blocked on, since the
+    // user never stated this one themselves), then the configured default.
+    // Recorded in `placeOfSupplySource` so callers (the preview) can tell the
+    // user exactly where this came from — critical for the party-derived
+    // case, which can genuinely be wrong (DECISIONS.md #28).
+    if (effectivePlaceOfSupply === null) {
+      const partyState = resolvePartyState(deps.db, phase5Validation.partyMatch?.matchedName ?? null);
+      if (partyState !== null && isRecognizedState(partyState)) {
+        effectivePlaceOfSupply = partyState;
+        placeOfSupplySource = 'party';
+      } else {
+        effectivePlaceOfSupply = deps.gstConfig.defaultPlaceOfSupply;
+        placeOfSupplySource = 'default';
+      }
+    }
+    if (effectivePlaceOfSupply === null) {
+      blockers.push({
+        code: 'place_of_supply_missing',
+        message: 'No Place of Supply was stated, and no default is configured.',
+      });
+    } else if (!isRecognizedState(effectivePlaceOfSupply)) {
+      blockers.push({
+        code: 'place_of_supply_unrecognized',
+        message: `"${effectivePlaceOfSupply}" is not a recognised state or union territory.`,
+      });
+    }
+    if (
+      effectivePlaceOfSupply !== null &&
+      isRecognizedState(effectivePlaceOfSupply) &&
+      companyState.trim() !== '' &&
+      isRecognizedState(companyState)
+    ) {
+      // Resolved fresh from the cache every time, never from static config —
+      // see gstLedgerResolution.js. A ledger name that fails to resolve (not
+      // found, or ambiguous) comes back as `null` and is caught below, exactly
+      // like the old ledgerExistsExact check, just for a different reason.
+      const resolved = resolveGstLedgers(deps.db);
+      gstTreatment = determineGstTreatment(companyState, effectivePlaceOfSupply, {
+        cgstLedger: resolved.cgst.ledgerName,
+        sgstLedger: resolved.sgst.ledgerName,
+        igstLedger: resolved.igst.ledgerName,
+      });
+      const relevantResolutions =
+        gstTreatment.type === 'intrastate'
+          ? [
+              [GST_DUTY_HEADS.cgst, resolved.cgst],
+              [GST_DUTY_HEADS.sgst, resolved.sgst],
+            ]
+          : [[GST_DUTY_HEADS.igst, resolved.igst]];
+      for (const [dutyHead, resolution] of relevantResolutions) {
+        if (resolution.status === 'not_found') {
+          blockers.push({
+            code: 'gst_ledger_not_found_in_masters',
+            message: `No ledger classified as ${dutyHead} (TAXTYPE=GST) was found in TallyPrime.`,
+          });
+        } else if (resolution.status === 'ambiguous') {
+          blockers.push({
+            code: 'gst_ledger_ambiguous',
+            message: `Multiple ledgers are classified as ${dutyHead}; the correct one cannot be determined automatically.`,
+          });
+        }
       }
     }
   }

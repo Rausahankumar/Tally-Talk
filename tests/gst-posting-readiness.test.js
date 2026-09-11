@@ -1296,6 +1296,40 @@ describe('checkPostingReadiness — J: stock availability', () => {
     expect(result.itemStock[0]?.resolvedBatch).toBeNull();
   });
 });
+describe('checkPostingReadiness — K: GST is optional, not mandatory', () => {
+  /** Deliberately unconfigured — company state absent, no default POS — to
+   * prove none of it is even consulted when no item needs GST. */
+  const NO_GST_CONFIG = { companyState: '', defaultPlaceOfSupply: null };
+  function noGstDeps(overrides = {}) {
+    return {
+      db: database.db,
+      gstConfig: NO_GST_CONFIG,
+      itemLedgerMappingStore,
+      godownConfig: GODOWN_CONFIG,
+      stockAvailabilityStore,
+      ...overrides,
+    };
+  }
+  it('no item needs GST — Place of Supply, Company State, and GST ledgers are never required, never blocked on', () => {
+    const noGstValidation = {
+      ...VALID_PHASE5,
+      items: [{ ...VALID_PHASE5.items[0], resolvedGstPercent: null }],
+    };
+    const result = checkPostingReadiness(noGstDeps(), draft({ placeOfSupply: null }), noGstValidation);
+    expect(result.ready).toBe(true);
+    expect(result.gstTreatment).toBeNull();
+    expect(result.blockers).toEqual([]);
+  });
+  it('at least one item needs GST — existing company-state/place-of-supply requirements still apply, unchanged', () => {
+    const mixedGstValidation = {
+      ...VALID_PHASE5,
+      items: [{ ...VALID_PHASE5.items[0], resolvedGstPercent: 18 }],
+    };
+    const result = checkPostingReadiness(noGstDeps(), draft({ placeOfSupply: null }), mixedGstValidation);
+    expect(result.ready).toBe(false);
+    expect(result.blockers).toContainEqual(expect.objectContaining({ code: 'company_state_not_configured' }));
+  });
+});
 describe('isOnlyMissingPlaceOfSupply', () => {
   it('is true only when POS-missing is the sole blocker', () => {
     expect(isOnlyMissingPlaceOfSupply(readiness(draft({ placeOfSupply: null })))).toBe(true);

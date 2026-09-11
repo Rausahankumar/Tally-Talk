@@ -45,6 +45,16 @@
  * Tally's GST history is consulted for both sales and purchase (see
  * `resolveLineItemGstPercent` — no voucherType gate), so
  * `hasRefreshWorthyMissingGstPercent` applies to every voucher type.
+ *
+ * GST itself is optional, not mandatory (validateDraft.js/postingReadiness.js):
+ * a genuinely GST-less item resolves to `resolvedGstPercent: null` and is
+ * never an issue, so there is nothing there to refresh for. The refresh
+ * trigger below instead keys on `gst_data_unverifiable` — Tally GST data
+ * that is *present but unverifiable* (missing components, CGST+SGST≠IGST,
+ * an unrecognised rate) is exactly the kind of staleness this mechanism
+ * exists for: the cache may be holding a half-written or superseded record
+ * that a fresh sync would resolve cleanly. Absence is never refresh-worthy;
+ * only genuine unverifiable-but-present data is.
  */
 import { checkPostingReadiness } from '../gst/postingReadiness.js';
 import { validateTransactionDraft } from '../validation/validateDraft.js';
@@ -81,16 +91,20 @@ function hasRefreshWorthyMissingRate(validation, voucherType) {
   });
 }
 /**
- * A `missing_gst_percent` issue on an exact-matched item means the master
- * exists but its GST rate couldn't be resolved — mirrors
- * `hasRefreshWorthyMissingRate`, but never excludes purchase vouchers:
- * `resolveLineItemGstPercent` consults Tally's `gstRateHistory` for every
- * voucher type. Deliberately excludes `invalid_gst_percent` — a bad
- * user-stated GST percent is never fixed by refreshing Tally.
+ * A `gst_data_unverifiable` issue on an exact-matched item means the master
+ * exists and Tally has a GST record for it, but that record couldn't be
+ * trusted (missing components, CGST+SGST≠IGST, unrecognised rate) — the
+ * same shape of staleness as a non-exact name match (see module doc): the
+ * cache may be holding a stale/incomplete copy of a record Tally has since
+ * corrected. Mirrors `hasRefreshWorthyMissingRate`, but never excludes
+ * purchase vouchers: `resolveLineItemGstPercent` consults Tally's
+ * `gstRateHistory` for every voucher type. Deliberately excludes
+ * `invalid_gst_percent` (bad user input — never fixed by refreshing Tally)
+ * and a genuinely GST-less item (not an issue at all — nothing to refresh).
  */
-function hasRefreshWorthyMissingGstPercent(validation) {
+function hasRefreshWorthyUnverifiableGst(validation) {
   return validation.issues.some((issue) => {
-    if (issue.code !== 'missing_gst_percent') return false;
+    if (issue.code !== 'gst_data_unverifiable') return false;
     return validation.items[issue.itemIndex]?.stockItemMatch.status === 'exact';
   });
 }
@@ -98,7 +112,7 @@ function validationNeedsRefresh(validation, voucherType) {
   if (validation.partyMatch !== null && validation.partyMatch.status !== 'exact') return true;
   if (validation.items.some((item) => item.stockItemMatch.status !== 'exact')) return true;
   if (hasRefreshWorthyMissingRate(validation, voucherType)) return true;
-  return hasRefreshWorthyMissingGstPercent(validation);
+  return hasRefreshWorthyUnverifiableGst(validation);
 }
 function readinessNeedsRefresh(readiness) {
   if (readiness === null) return false;

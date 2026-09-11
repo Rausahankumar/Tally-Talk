@@ -385,7 +385,7 @@ describe('buildSalesVoucherInput — happy path', () => {
       expect(totalTax).toBeCloseTo(931.25, 2);
       expect(totalTax).not.toBeCloseTo(1012.5, 2);
     });
-    it('one resolvable item and one item with an unresolvable GST percent: only that item blocks, with a precise reason', () => {
+    it('one item with GST and one genuinely GST-less item: builds successfully, GST allocated only for the applicable item', () => {
       const d = draft({
         items: [
           { itemName: 'Steel Rods', quantity: 5, rate: 1000, godown: 'Main Location', gstPercent: 18 },
@@ -394,7 +394,7 @@ describe('buildSalesVoucherInput — happy path', () => {
             quantity: 5,
             rate: 125,
             godown: 'Main Location',
-            gstPercent: null,
+            gstPercent: null, // genuinely no GST for this item — a valid state, not an error
           },
         ],
       });
@@ -406,11 +406,12 @@ describe('buildSalesVoucherInput — happy path', () => {
         validation,
         readiness,
       );
-      expect(result.ok).toBe(false);
-      if (result.ok) return;
-      expect(result.reasons).toHaveLength(1);
-      expect(result.reasons[0]).toContain('Anti-Dandruff Shampoos');
-      expect(result.reasons[0]).toContain('GST percent');
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.voucher.items).toHaveLength(2);
+      // 5 * 1000 * 18% = 900, split 450 CGST + 450 SGST (intrastate, Delhi/Delhi).
+      const totalTax = result.voucher.taxLedgerAllocations.reduce((sum, tax) => sum + tax.amount, 0);
+      expect(totalTax).toBeCloseTo(900, 2);
     });
   });
   it('builds a resolved voucher for a confirmed non-batch-tracked item with no cached stock — batch resolves to Tally\'s own implicit "Primary Batch"', () => {
@@ -674,7 +675,7 @@ describe('buildSalesVoucherInput — fails closed', () => {
     );
     expect(result.ok).toBe(false);
   });
-  it('refuses when GST percent is missing for an item — GST is resolved per item, never a voucher-wide gate', () => {
+  it('a null GST percent for an item is a valid no-GST state, not a block — GST is optional, resolved per item, never a voucher-wide gate', () => {
     const d = draft({
       items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500, godown: null, gstPercent: null }],
     });
@@ -684,16 +685,19 @@ describe('buildSalesVoucherInput — fails closed', () => {
       VALID_PHASE5,
       fullyReadyResult(),
     );
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    expect(result.reasons.some((r) => r.includes('GST percent'))).toBe(true);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.voucher.taxLedgerAllocations).toEqual([]);
   });
   it('collects every problem in one pass rather than stopping at the first', () => {
+    // This item genuinely needs GST (gstPercent: 18), so a missing GST
+    // treatment is still a real problem here — unlike the null-GST case
+    // above, which needs none of this machinery at all.
     const d = draft({
-      items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500, godown: null, gstPercent: null }],
+      items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500, godown: null, gstPercent: 18 }],
     });
     const validation = { ...VALID_PHASE5, partyMatch: null };
-    const readiness = { ...fullyReadyResult(), gstTreatment: null };
+    const readiness = { ...fullyReadyResult(), gstTreatment: null, itemGodowns: [{ itemIndex: 0, godown: null }] };
     const result = buildSalesVoucherInput(
       { db: database.db, companyName: COMPANY_NAME },
       d,
