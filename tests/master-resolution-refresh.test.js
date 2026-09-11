@@ -179,6 +179,102 @@ describe('resolveDraftWithRefresh — 6. Tally unavailable during refresh blocks
     expect(result.validation.partyMatch?.matchedName).toBe('New Customer');
   });
 });
+describe('resolveDraftWithRefresh — stale cached selling price on an exact-matched StockItem (the "Test Item" incident)', () => {
+  function priceDraft(overrides = {}) {
+    return draft({
+      partyName: 'Itworks',
+      items: [{ itemName: 'Steel Rods', quantity: 10, rate: null, godown: null, gstPercent: 18 }],
+      ...overrides,
+    });
+  }
+  beforeEach(() => {
+    cache.replaceAll('Ledger', [
+      { NAME: 'CGST', PARENT: 'Duties & Taxes', TAXTYPE: 'GST', GSTDUTYHEAD: 'CGST' },
+      { NAME: 'SGST', PARENT: 'Duties & Taxes', TAXTYPE: 'GST', GSTDUTYHEAD: 'SGST/UTGST' },
+      { NAME: 'Sales', PARENT: 'Sales Accounts' },
+      { NAME: 'Itworks', PARENT: 'Sundry Creditors' },
+    ]);
+    // No item_ledger_mappings salesRate configured for this test group —
+    // rate must come from Tally's own standardPriceHistory or nowhere.
+    itemLedgerMappingStore.setMapping({ stockItemName: 'Steel Rods', salesLedger: 'Sales', purchaseLedger: 'Purchase' });
+  });
+  it('1. cached price already present, exact name match — resolves immediately, no sync at all', async () => {
+    cache.replaceAll('StockItem', [
+      { NAME: 'Steel Rods', PARENT: '', BASEUNITS: 'Kg', standardPriceHistory: [{ date: '2026-01-01', rate: 500, unit: 'Kg' }] },
+    ]);
+    const result = await resolveDraftWithRefresh(baseDeps(neverCalledSyncCoordinator()), priceDraft());
+    expect(result.refreshAttempted).toBe(false);
+    expect(result.validation.items[0]).toMatchObject({ rateValid: true, resolvedRate: 500 });
+  });
+  it('2. price only just set in Tally, cache still has none — refresh brings it in and resolves', async () => {
+    cache.replaceAll('StockItem', [{ NAME: 'Steel Rods', PARENT: '', BASEUNITS: 'Kg' }]); // no price history yet
+    const syncCoordinator = scriptedSyncCoordinator({
+      succeeds: true,
+      applyFn: () =>
+        cache.replaceAll('StockItem', [
+          { NAME: 'Steel Rods', PARENT: '', BASEUNITS: 'Kg', standardPriceHistory: [{ date: '2026-01-01', rate: 500, unit: 'Kg' }] },
+        ]),
+    });
+    const result = await resolveDraftWithRefresh(baseDeps(syncCoordinator), priceDraft());
+    expect(syncCoordinator.callCount).toBe(1);
+    expect(result.refreshAttempted).toBe(true);
+    expect(result.validation.items[0]).toMatchObject({ rateValid: true, resolvedRate: 500 });
+  });
+  it('4. still no applicable price even after refresh — blocks, never guesses', async () => {
+    cache.replaceAll('StockItem', [{ NAME: 'Steel Rods', PARENT: '', BASEUNITS: 'Kg' }]);
+    const syncCoordinator = scriptedSyncCoordinator({ succeeds: true }); // nothing changes
+    const result = await resolveDraftWithRefresh(baseDeps(syncCoordinator), priceDraft());
+    expect(syncCoordinator.callCount).toBe(1);
+    expect(result.refreshAttempted).toBe(true);
+    expect(result.validation.items[0]).toMatchObject({ rateValid: false, resolvedRate: null });
+    expect(result.validation.issues.some((i) => i.code === 'missing_rate')).toBe(true);
+    expect(result.validation.isValid).toBe(false);
+  });
+  it('5. user explicitly states a rate — used as-is, no sync, existing precedence untouched', async () => {
+    cache.replaceAll('StockItem', [{ NAME: 'Steel Rods', PARENT: '', BASEUNITS: 'Kg' }]); // no price history at all
+    const result = await resolveDraftWithRefresh(
+      baseDeps(neverCalledSyncCoordinator()),
+      priceDraft({ items: [{ itemName: 'Steel Rods', quantity: 10, rate: 999, godown: null, gstPercent: 18 }] }),
+    );
+    expect(result.refreshAttempted).toBe(false);
+    expect(result.validation.items[0]).toMatchObject({ rateValid: true, resolvedRate: 999 });
+  });
+  it('6. user states an invalid rate — never triggers a Tally sync, since no sync could fix bad user input', async () => {
+    const result = await resolveDraftWithRefresh(
+      baseDeps(neverCalledSyncCoordinator()),
+      priceDraft({ items: [{ itemName: 'Steel Rods', quantity: 10, rate: 'abc', godown: null, gstPercent: 18 }] }),
+    );
+    expect(result.refreshAttempted).toBe(false);
+    expect(result.validation.items[0].rateValid).toBe(false);
+    expect(result.validation.issues.some((i) => i.code === 'invalid_rate')).toBe(true);
+  });
+  it('7. Tally unreachable during the refresh — blocks safely, never guesses a price', async () => {
+    cache.replaceAll('StockItem', [{ NAME: 'Steel Rods', PARENT: '', BASEUNITS: 'Kg' }]);
+    const syncCoordinator = scriptedSyncCoordinator({ succeeds: false });
+    const result = await resolveDraftWithRefresh(baseDeps(syncCoordinator), priceDraft());
+    expect(result.refreshAttempted).toBe(true);
+    expect(result.refreshFailed).toBe(true);
+  });
+  it('a missing_rate on a purchase voucher never triggers a sync — Tally standard rate is never consulted for purchases anyway', async () => {
+    cache.replaceAll('StockItem', [{ NAME: 'Steel Rods', PARENT: '', BASEUNITS: 'Kg' }]);
+    // Purchase vouchers match a party against Sundry Debtors, not Sundry
+    // Creditors (see VOUCHER_TYPE_PARTY_GROUP in masterLookup.js) — reseed
+    // "Itworks" under the group this voucher type actually requires.
+    cache.replaceAll('Ledger', [
+      { NAME: 'CGST', PARENT: 'Duties & Taxes', TAXTYPE: 'GST', GSTDUTYHEAD: 'CGST' },
+      { NAME: 'SGST', PARENT: 'Duties & Taxes', TAXTYPE: 'GST', GSTDUTYHEAD: 'SGST/UTGST' },
+      { NAME: 'Purchase', PARENT: 'Purchase Accounts' },
+      { NAME: 'Itworks', PARENT: 'Sundry Debtors' },
+    ]);
+    itemLedgerMappingStore.setMapping({ stockItemName: 'Steel Rods', salesLedger: 'Sales', purchaseLedger: 'Purchase' }); // no purchaseRate configured
+    const result = await resolveDraftWithRefresh(
+      baseDeps(neverCalledSyncCoordinator()),
+      priceDraft({ voucherType: 'purchase' }),
+    );
+    expect(result.refreshAttempted).toBe(false);
+    expect(result.validation.items[0].rateValid).toBe(false);
+  });
+});
 describe('resolveReadinessWithRefresh — the confirm-time / pre-write re-check path', () => {
   function fullDeps(syncCoordinator, extra = {}) {
     return { ...baseDeps(syncCoordinator), companyName: 'Test Co', ...extra };
