@@ -54,7 +54,12 @@ export function buildSalesVoucherInput(deps, draft, validation, readiness) {
   if (partyLedgerName === null) {
     reasons.push('No resolved party ledger name is available.');
   }
-  if (readiness.gstTreatment === null) {
+  // GST is optional, not mandatory: a resolved GST treatment is only
+  // required when at least one item actually carries a GST percent (see
+  // postingReadiness.js, which only resolves gstTreatment in that case). A
+  // voucher where every item genuinely has no GST needs none of this.
+  const anyItemNeedsGst = draft.items.some((draftItem) => (draftItem.gstPercent ?? null) !== null);
+  if (anyItemNeedsGst && readiness.gstTreatment === null) {
     reasons.push('No resolved GST treatment is available.');
   }
   // GST percent is checked per item, in the loop below, not here — a shared
@@ -96,14 +101,11 @@ export function buildSalesVoucherInput(deps, draft, validation, readiness) {
     // This item's own resolved GST rate (validateTransactionDraft's
     // per-item resolution, already filled in on the draft the same way
     // `rate` already is) — never a voucher-wide value forced onto every
-    // item. Checked last, alongside every other required per-item value,
-    // so a missing rate is reported with the same precise, itemIndex-scoped
-    // message as a missing ledger/godown/batch.
+    // item. `null` is a valid, resolved "no GST for this item" state (GST
+    // is optional, not mandatory — see validateDraft.js), not a missing
+    // value to block on; it simply excludes this item from tax bucketing
+    // below (taxLedgerAllocation.js).
     const gstPercent = draftItem.gstPercent ?? null;
-    if (gstPercent === null) {
-      reasons.push(`Item ${itemIndex} ("${stockItemName}"): no resolved GST percent.`);
-      return;
-    }
     const amount = roundMoney(quantity * rate);
     lineItems.push({
       stockItemName,
@@ -121,7 +123,10 @@ export function buildSalesVoucherInput(deps, draft, validation, readiness) {
     return { ok: false, reasons };
   }
   // Safe: every value asserted below was confirmed non-null above, since
-  // `reasons` is empty only when none of the pushes ran.
+  // `reasons` is empty only when none of the pushes ran. `gstTreatment`
+  // itself may still legitimately be `null` here — a voucher where no item
+  // needs GST never required one (see the `anyItemNeedsGst` check above);
+  // `buildTaxLedgerAllocationsByRateBucket` handles that case directly.
   const gstTreatment = readiness.gstTreatment;
   // See taxLedgerAllocation.js's module doc: this is the one place the
   // "Option 1" XML shape (multiple LEDGERENTRIES.LIST entries under the same

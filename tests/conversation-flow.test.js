@@ -285,15 +285,20 @@ describe('a valid transaction request reaches preview', () => {
 });
 describe('missing information triggers a targeted follow-up', () => {
   it('asks only for what is actually missing, and preserves what is known', async () => {
+    // Rate is genuinely missing (Steel Rods has no configured/Tally rate).
+    // GST is deliberately left unstated too — Steel Rods has no Tally GST
+    // data either, but GST is optional, not mandatory (unlike rate), so it
+    // must resolve silently to no-GST and never appear in the follow-up.
     llm.setNextResponse(
       draft({
         partyName: 'Suresh & Sons',
-        items: [{ itemName: 'Steel Rods', quantity: 100, rate: 500, godown: null }],
+        items: [{ itemName: 'Steel Rods', quantity: 100, rate: null, godown: null }],
       }),
     );
     await sendMessage(USER_A, CHAT_A, 'Sell 100 steel rods to Suresh & Sons');
     expect(telegram.sent).toHaveLength(1);
-    expect(telegram.sent[0]?.text).toMatch(/GST rate/i);
+    expect(telegram.sent[0]?.text).toMatch(/rate per unit/i);
+    expect(telegram.sent[0]?.text).not.toMatch(/GST rate/i);
     expect(telegram.sent[0]?.buttons).toBeUndefined();
     expect(conversationRow(CHAT_A)?.status).toBe('collecting');
     const stored = conversationStore.getActiveDraft(CHAT_A);

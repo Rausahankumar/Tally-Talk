@@ -131,11 +131,12 @@ describe('validateTransactionDraft - required fields', () => {
     expect(result.isValid).toBe(false);
     expect(result.issues).toContainEqual(expect.objectContaining({ code: 'missing_items' }));
   });
-  it('flags a missing GST percent', () => {
+  it('resolves to no GST (not an error) when nothing is stated and Tally genuinely has none — GST is optional, not mandatory', () => {
     const result = validateTransactionDraft(database.db, validDraft({ gstPercent: null }));
-    expect(result.gstPercentValid).toBe(false);
-    expect(result.resolvedGstPercent).toBeNull();
-    expect(result.issues).toContainEqual(expect.objectContaining({ code: 'missing_gst_percent' }));
+    expect(result.isValid).toBe(true);
+    expect(result.gstPercentValid).toBe(true);
+    expect(result.items[0]?.resolvedGstPercent).toBeNull();
+    expect(result.issues.some((i) => i.code === 'missing_gst_percent')).toBe(false);
   });
 });
 describe('validateTransactionDraft - unknown masters', () => {
@@ -284,15 +285,16 @@ describe('validateTransactionDraft - resolving rate/GST from trusted configurati
   beforeEach(() => {
     itemLedgerMappingStore = createItemLedgerMappingStore(database.db);
   });
-  it('leaves rate/GST unresolved (and asks) when no mapping store is passed at all — existing callers unaffected', () => {
+  it('leaves rate unresolved (and asks) when no mapping store is passed at all — existing callers unaffected; GST resolves to no-GST, not an error', () => {
     const result = validateTransactionDraft(
       database.db,
       validDraft({ items: [{ itemName: 'Steel Rods', quantity: 10, rate: null, godown: null }], gstPercent: null }),
     );
     expect(result.items[0]?.resolvedRate).toBeNull();
-    expect(result.resolvedGstPercent).toBeNull();
+    expect(result.items[0]?.gstPercentValid).toBe(true);
+    expect(result.items[0]?.resolvedGstPercent).toBeNull();
     expect(result.issues).toContainEqual(expect.objectContaining({ code: 'missing_rate' }));
-    expect(result.issues).toContainEqual(expect.objectContaining({ code: 'missing_gst_percent' }));
+    expect(result.issues.some((i) => i.code === 'missing_gst_percent')).toBe(false);
   });
   it('resolves a missing rate from the trusted per-item mapping', () => {
     itemLedgerMappingStore.setMapping({
@@ -424,23 +426,26 @@ describe('validateTransactionDraft - resolving rate/GST from Tally-cached histor
     const result = validateTransactionDraft(database.db, orangeDraft());
     expect(result.resolvedGstPercent).toBe(18);
   });
-  it('ignores a future-dated GST entry — ie transaction date is before it takes effect', () => {
+  it('a future-dated GST entry (no entry applicable as of the transaction date) resolves as genuinely no GST, not an error', () => {
     cacheOrange({
       gstRateHistory: [{ applicableFrom: '2030-01-01', states: [{ state: 'Any', cgst: 9, sgst: 9, igst: 18 }] }],
     });
     const result = validateTransactionDraft(database.db, orangeDraft());
-    expect(result.resolvedGstPercent).toBeNull();
-    expect(result.issues).toContainEqual(expect.objectContaining({ code: 'missing_gst_percent' }));
+    expect(result.items[0]?.gstPercentValid).toBe(true);
+    expect(result.items[0]?.resolvedGstPercent).toBeNull();
+    expect(result.issues.some((i) => i.code === 'missing_gst_percent')).toBe(false);
+    expect(result.issues.some((i) => i.code === 'gst_data_unverifiable')).toBe(false);
   });
-  it('fails closed on a GST record whose CGST+SGST does not equal IGST, rather than trusting either number', () => {
+  it('fails closed on a GST record whose CGST+SGST does not equal IGST — present but unverifiable, never silently treated as no GST', () => {
     cacheOrange({
       gstRateHistory: [
         { applicableFrom: '2025-04-01', states: [{ state: 'Any', cgst: 9, sgst: 9, igst: 12 }] },
       ],
     });
     const result = validateTransactionDraft(database.db, orangeDraft());
-    expect(result.resolvedGstPercent).toBeNull();
-    expect(result.issues).toContainEqual(expect.objectContaining({ code: 'missing_gst_percent' }));
+    expect(result.items[0]?.gstPercentValid).toBe(false);
+    expect(result.items[0]?.resolvedGstPercent).toBeNull();
+    expect(result.issues).toContainEqual(expect.objectContaining({ code: 'gst_data_unverifiable' }));
   });
   it('resolves rate from Tally Standard Price when neither explicit nor configured rate is present', () => {
     cacheOrange();
@@ -489,15 +494,16 @@ describe('validateTransactionDraft - resolving rate/GST from Tally-cached histor
     const result = validateTransactionDraft(database.db, orangeDraft(), store);
     expect(result.resolvedGstPercent).toBe(18); // Tally's rate, not the configured 5
   });
-  it('existing missing-rate/missing-GST behaviour is unaffected for an item with no Tally history at all', () => {
+  it('existing missing-rate behaviour is unaffected for an item with no Tally history at all; GST resolves to no-GST', () => {
     const result = validateTransactionDraft(
       database.db,
       validDraft({ items: [{ itemName: 'Steel Rods', quantity: 10, rate: null, godown: null }], gstPercent: null }),
     );
     expect(result.items[0]?.resolvedRate).toBeNull();
-    expect(result.resolvedGstPercent).toBeNull();
+    expect(result.items[0]?.gstPercentValid).toBe(true);
+    expect(result.items[0]?.resolvedGstPercent).toBeNull();
     expect(result.issues).toContainEqual(expect.objectContaining({ code: 'missing_rate' }));
-    expect(result.issues).toContainEqual(expect.objectContaining({ code: 'missing_gst_percent' }));
+    expect(result.issues.some((i) => i.code === 'missing_gst_percent')).toBe(false);
   });
 });
 describe('validateTransactionDraft - per-line GST resolution (mixed-rate vouchers)', () => {
@@ -613,7 +619,7 @@ describe('validateTransactionDraft - per-line GST resolution (mixed-rate voucher
     expect(result.items[0]?.resolvedGstPercent).toBe(28); // item override beats voucher-wide
     expect(result.items[1]?.resolvedGstPercent).toBe(12); // sibling falls back to voucher-wide
   });
-  it('8. one resolvable item and one genuinely unresolved item: only the unresolved one is reported', () => {
+  it('8. one item with real Tally GST and one genuinely GST-less item: mixed GST + no-GST in one voucher is allowed, GST applies only where resolved', () => {
     cache.replaceAll('StockItem', [
       { NAME: 'ACC Cement OPC 43 Grade', PARENT: 'Building Materials', BASEUNITS: 'Bags' },
       { NAME: 'Cement Bags', PARENT: 'Building Materials', BASEUNITS: 'Bags' },
@@ -625,17 +631,16 @@ describe('validateTransactionDraft - per-line GST resolution (mixed-rate voucher
       mixedRateDraft({
         items: [
           { itemName: 'Orange', quantity: 5, rate: 1000, godown: null }, // resolves from Tally
-          { itemName: 'Steel Rods', quantity: 5, rate: 500, godown: null }, // no history, no config
+          { itemName: 'Steel Rods', quantity: 5, rate: 500, godown: null }, // no history — genuinely no GST
         ],
       }),
     );
+    expect(result.isValid).toBe(true);
     expect(result.items[0]?.gstPercentValid).toBe(true);
     expect(result.items[0]?.resolvedGstPercent).toBe(18);
-    expect(result.items[1]?.gstPercentValid).toBe(false);
+    expect(result.items[1]?.gstPercentValid).toBe(true);
     expect(result.items[1]?.resolvedGstPercent).toBeNull();
-    const gstIssues = result.issues.filter((i) => i.code === 'missing_gst_percent');
-    expect(gstIssues).toHaveLength(1);
-    expect(gstIssues[0]).toMatchObject({ itemIndex: 1 });
+    expect(result.issues.some((i) => i.code === 'missing_gst_percent')).toBe(false);
   });
   it('an invalid explicit per-item GST rate blocks only that item, with no fallback attempted for it', () => {
     cacheOrangeAndShampoo();

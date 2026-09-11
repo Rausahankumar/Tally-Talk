@@ -338,14 +338,29 @@ describe('resolveDraftWithRefresh — stale cached GST rate on an exact-matched 
     expect(result.refreshAttempted).toBe(true);
     expect(result.validation.items[0]).toMatchObject({ gstPercentValid: true, resolvedGstPercent: 18 });
   });
-  it('still unresolved after refresh — blocks, never guesses a GST rate', async () => {
-    cache.replaceAll('StockItem', [{ NAME: 'Samsung', PARENT: '', BASEUNITS: 'PCS' }]); // no gstRateHistory at all
-    const syncCoordinator = scriptedSyncCoordinator({ succeeds: true }); // nothing changes
+  it('no gstRateHistory at all resolves as genuinely no GST immediately — never a block, never a sync', async () => {
+    cache.replaceAll('StockItem', [{ NAME: 'Samsung', PARENT: '', BASEUNITS: 'PCS' }]); // absent, not malformed
+    const result = await resolveDraftWithRefresh(baseDeps(neverCalledSyncCoordinator()), gstDraft());
+    expect(result.refreshAttempted).toBe(false);
+    expect(result.validation.items[0]).toMatchObject({ gstPercentValid: true, resolvedGstPercent: null });
+    expect(result.validation.issues.some((i) => i.code === 'missing_gst_percent')).toBe(false);
+  });
+  it('malformed GST data still unresolved after refresh — blocks, never guesses a GST rate, never treats it as no-GST', async () => {
+    cache.replaceAll('StockItem', [
+      {
+        NAME: 'Samsung',
+        PARENT: '',
+        BASEUNITS: 'PCS',
+        gstRateHistory: [{ applicableFrom: '2025-04-01', states: [{ state: 'Any', cgst: null, sgst: null, igst: null }] }],
+      },
+    ]);
+    const syncCoordinator = scriptedSyncCoordinator({ succeeds: true }); // refresh runs, but the malformed data is unchanged
     const result = await resolveDraftWithRefresh(baseDeps(syncCoordinator), gstDraft());
     expect(syncCoordinator.callCount).toBe(1);
     expect(result.refreshAttempted).toBe(true);
     expect(result.validation.items[0]).toMatchObject({ gstPercentValid: false, resolvedGstPercent: null });
-    expect(result.validation.issues.some((i) => i.code === 'missing_gst_percent')).toBe(true);
+    expect(result.validation.issues.some((i) => i.code === 'gst_data_unverifiable')).toBe(true);
+    expect(result.validation.issues.some((i) => i.code === 'missing_gst_percent')).toBe(false);
   });
   it('user explicitly states a GST percent — used as-is, no sync', async () => {
     cache.replaceAll('StockItem', [{ NAME: 'Samsung', PARENT: '', BASEUNITS: 'PCS' }]); // no gstRateHistory at all
@@ -367,7 +382,14 @@ describe('resolveDraftWithRefresh — stale cached GST rate on an exact-matched 
     expect(result.validation.issues.some((i) => i.code === 'invalid_gst_percent')).toBe(true);
   });
   it('applies on a purchase voucher too — Tally GST history is consulted for every voucher type, unlike rate', async () => {
-    cache.replaceAll('StockItem', [{ NAME: 'Samsung', PARENT: '', BASEUNITS: 'PCS' }]);
+    cache.replaceAll('StockItem', [
+      {
+        NAME: 'Samsung',
+        PARENT: '',
+        BASEUNITS: 'PCS',
+        gstRateHistory: [{ applicableFrom: '2025-04-01', states: [{ state: 'Any', cgst: null, sgst: null, igst: null }] }],
+      },
+    ]); // malformed, not absent — absence alone never triggers a refresh under the new no-GST-is-optional design
     cache.replaceAll('Ledger', [
       { NAME: 'CGST', PARENT: 'Duties & Taxes', TAXTYPE: 'GST', GSTDUTYHEAD: 'CGST' },
       { NAME: 'SGST', PARENT: 'Duties & Taxes', TAXTYPE: 'GST', GSTDUTYHEAD: 'SGST/UTGST' },
